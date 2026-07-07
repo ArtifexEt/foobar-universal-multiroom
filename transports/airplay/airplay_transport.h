@@ -3,9 +3,9 @@
 #include "airplay_discovery.h"
 #include "airplay_session.h"
 
-#include "../../components/foo_out_multiroom_bridge/core/output_registry.h"
-#include "../../components/foo_out_multiroom_bridge/core/packet_scheduler.h"
-#include "../../components/foo_out_multiroom_bridge/transport.h"
+#include "core/output_registry.h"
+#include "core/packet_scheduler.h"
+#include "transport.h"
 
 #include <vector>
 

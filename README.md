@@ -1,11 +1,10 @@
 # Foobar Universal Multiroom
 
-Foobar Universal Multiroom is a planned standalone foobar2000 component that
-plays foobar audio on selected network speakers with synchronized multiroom
-playback.
+Foobar Universal Multiroom is a standalone foobar2000 component for playing
+foobar audio on selected network speakers with synchronized multiroom playback.
 
-The first transport target is native AirPlay. The plugin should own discovery,
-speaker selection, stream scheduling, and synchronization itself. The transport
+The first transport target is native AirPlay. The plugin owns discovery, speaker
+selection, stream scheduling, and synchronization state itself. The transport
 boundary stays generic so HEOS, Music Assistant, Chromecast groups, Snapcast, or
 other renderers can be added later without changing the foobar UI.
 
@@ -20,31 +19,24 @@ other renderers can be added later without changing the foobar UI.
   when desired.
 - Support future transports such as HEOS without changing the foobar-facing UI.
 
-## Recommended Shape
+## Current Implementation
 
-The first implementation should be a foobar output component named
-`foo_out_multiroom_bridge`.
-
-It should expose a compact foobar UI panel/menu for:
-
-- transport connection status,
-- output list refresh,
-- speaker enable/disable toggles,
-- per-speaker volume,
-- per-speaker offset in milliseconds,
-- preset groups such as `Living room`, `Kitchen`, or `Whole home`.
-
-The component should stream foobar PCM into its own transport layer. The AirPlay
-transport handles discovery, session setup, packet timing, speaker volume, and
-offset control. Other systems should implement the same internal transport
-contract.
+- `foo_out_multiroom_bridge` builds as a foobar2000 component in GitHub Actions.
+- The foobar UI includes a compact speaker selector element.
+- The selector refreshes native AirPlay/mDNS discovery and shows discovered
+  speakers as a checkbox menu.
+- Preferences expose status, refresh, repository, and support actions with
+  foobar dark-mode/scaling hooks.
+- The transport-neutral core includes output state, packet scheduling, stream
+  clocking, and the AirPlay transport boundary.
+- AirPlay playback/session negotiation is the next large implementation area.
 
 ## Repository Layout
 
-- `components/foo_out_multiroom_bridge/` - foobar2000 component plan and public
+- `components/foo_out_multiroom_bridge/` - foobar2000 component and public
   component boundary.
-- `transports/airplay/` - native AirPlay transport notes.
-- `transports/heos/` - future HEOS transport placeholder.
+- `transports/airplay/` - native AirPlay discovery and transport implementation.
+- `transports/heos/` - future HEOS transport area.
 - `docs/ARCHITECTURE.md` - proposed system design.
 - `docs/AIRPLAY_ENGINE.md` - native AirPlay engine plan.
 - `docs/SYNC_ENGINE.md` - synchronized playback clock plan.
@@ -54,8 +46,7 @@ contract.
 
 ## Build
 
-The current CMake build covers the transport-neutral core and a small contract
-probe while the real foobar SDK project is added.
+The CMake build covers the transport-neutral core and a small contract probe.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -63,6 +54,5 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The real component build should download the foobar2000 SDK in CI, copy
-`components/foo_out_multiroom_bridge` into the SDK tree, build with MSBuild, then
-package the DLL as `foo_out_multiroom_bridge.fb2k-component`.
+GitHub Actions also downloads the foobar2000 SDK, builds the component with
+MSBuild, and packages `foo_out_multiroom_bridge.fb2k-component`.

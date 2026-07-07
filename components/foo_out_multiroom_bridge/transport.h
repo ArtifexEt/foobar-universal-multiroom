@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,9 @@ struct OutputDevice {
     int measured_latency_ms = 0;
     std::string format;
     std::vector<std::string> supported_formats;
+    std::string endpoint_host;
+    uint16_t endpoint_port = 0;
+    std::map<std::string, std::string> txt_records;
 };
 
 struct PcmFormat {
@@ -54,4 +58,3 @@ public:
 };
 
 }  // namespace multiroom
-

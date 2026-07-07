@@ -1,7 +1,8 @@
 #pragma once
 
-#include "../../components/foo_out_multiroom_bridge/transport.h"
+#include "transport.h"
 
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -15,6 +16,7 @@ public:
     void start();
     void stop();
     bool active() const;
+    void refresh(std::chrono::milliseconds timeout = std::chrono::milliseconds(750));
 
     void upsert(OutputDevice device);
     std::vector<OutputDevice> list() const;
@@ -27,4 +29,3 @@ private:
 };
 
 }  // namespace multiroom::airplay
-

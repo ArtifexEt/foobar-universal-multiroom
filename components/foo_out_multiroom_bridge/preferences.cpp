@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "component_version.h"
+#include "multiroom_component_state.h"
 #include "preferences_resource.h"
 
 #include <array>
@@ -129,6 +130,7 @@ private:
 
         create_page(Page::Status, IDD_MULTIROOM_PAGE_STATUS);
         create_page(Page::About, IDD_MULTIROOM_PAGE_ABOUT);
+        update_status_page();
         populate_about_page();
         position_pages();
         show_selected_page();
@@ -210,10 +212,8 @@ private:
             return TRUE;
         }
         if (id == idRefreshButton) {
-            HWND summary = find_dlg_item(wnd_, idStatusSummary);
-            if (summary != nullptr) {
-                ::SetWindowTextW(summary, L"Discovery engine is ready; native network discovery is the next implementation step.");
-            }
+            MultiroomComponentState::instance().refresh_outputs();
+            update_status_page();
             return TRUE;
         }
 
@@ -266,6 +266,14 @@ private:
 
     void redraw() {
         ::RedrawWindow(wnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+    }
+
+    void update_status_page() {
+        HWND summary = find_dlg_item(wnd_, idStatusSummary);
+        if (summary == nullptr) return;
+
+        const auto status = MultiroomComponentState::instance().status_text();
+        ::SetWindowTextW(summary, status.c_str());
     }
 
     preferences_page_callback::ptr callback_;

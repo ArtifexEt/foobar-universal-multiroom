@@ -15,6 +15,7 @@ add_library(MultiroomCore
 target_compile_features(MultiroomCore PUBLIC cxx_std_20)
 target_include_directories(MultiroomCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/components/foo_out_multiroom_bridge
 )
 
 add_executable(MultiroomTransportContractProbe
@@ -27,6 +28,10 @@ target_link_libraries(MultiroomTransportContractProbe PRIVATE MultiroomCore)
 if(MSVC)
     target_compile_options(MultiroomCore PRIVATE /W4 /permissive-)
     target_compile_options(MultiroomTransportContractProbe PRIVATE /W4 /permissive-)
+endif()
+
+if(WIN32)
+    target_link_libraries(MultiroomCore PUBLIC ws2_32)
 endif()
 
 enable_testing()

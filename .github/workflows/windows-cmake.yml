@@ -62,6 +62,7 @@ jobs:
           $env:INCLUDE = "$wtlInclude;$env:INCLUDE"
           $env:CL = "/I`"$wtlInclude`" $env:CL"
           Copy-Item -Recurse components/foo_out_multiroom_bridge external/foobar2000-sdk/foobar2000/
+          Copy-Item -Recurse transports external/foobar2000-sdk/
           @"
           #pragma once
 

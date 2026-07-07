@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../components/foo_out_multiroom_bridge/core/packet_scheduler.h"
+#include "core/packet_scheduler.h"
 
 #include <map>
 #include <mutex>
@@ -32,4 +32,3 @@ private:
 };
 
 }  // namespace multiroom::airplay
-

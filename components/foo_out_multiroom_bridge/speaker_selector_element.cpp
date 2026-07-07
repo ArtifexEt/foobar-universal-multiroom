@@ -1,68 +1,26 @@
 #include "stdafx.h"
+#include "multiroom_component_state.h"
 
 #include <helpers/BumpableElem.h>
 #include <libPPUI/win32_op.h>
-
-#include <set>
 
 namespace {
 
 static constexpr GUID guid_speaker_selector_element = {
     0x4f175c3d, 0x7d32, 0x4bb3, {0xa7, 0x24, 0x4a, 0x24, 0x47, 0x23, 0x43, 0xc3}};
 static constexpr UINT_PTR kSpeakerMenuBase = 30000;
+static constexpr UINT_PTR kRefreshCommand = 29999;
 
-struct SpeakerItem {
-    const wchar_t* id;
-    const wchar_t* name;
-};
+std::wstring widen_utf8(const std::string& text) {
+    if (text.empty()) return {};
+    const int required = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (required <= 1) return {};
 
-const SpeakerItem kDemoSpeakers[] = {
-    {L"living-room", L"Living Room"},
-    {L"kitchen", L"Kitchen"},
-    {L"bedroom", L"Bedroom"},
-    {L"office", L"Office"},
-};
-
-class SpeakerSelectionState {
-public:
-    SpeakerSelectionState() {
-        selected_.insert(L"living-room");
-    }
-
-    bool selected(const wchar_t* id) const {
-        return selected_.find(id) != selected_.end();
-    }
-
-    void toggle(const wchar_t* id) {
-        const auto it = selected_.find(id);
-        if (it == selected_.end()) {
-            selected_.insert(id);
-        } else if (selected_.size() > 1) {
-            selected_.erase(it);
-        }
-    }
-
-    std::wstring label() const {
-        if (selected_.empty()) return L"No speakers";
-
-        std::wstring first;
-        size_t count = 0;
-        for (const auto& speaker : kDemoSpeakers) {
-            if (!selected(speaker.id)) continue;
-            if (first.empty()) first = speaker.name;
-            ++count;
-        }
-
-        if (count == 0) return L"No speakers";
-        if (count == 1) return first;
-        return first + L" +" + std::to_wstring(count - 1);
-    }
-
-private:
-    std::set<std::wstring> selected_;
-};
-
-SpeakerSelectionState g_selection;
+    std::wstring result(static_cast<size_t>(required), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, result.data(), required);
+    result.resize(static_cast<size_t>(required - 1));
+    return result;
+}
 
 class SpeakerSelectorElement
     : public ui_element_instance
@@ -175,7 +133,7 @@ private:
 
         CRect text_rect = button;
         text_rect.DeflateRect(8, 1, 22, 1);
-        const auto label = g_selection.label();
+        const auto label = MultiroomComponentState::instance().selected_label();
         WIN32_OP_D(dc.DrawTextW(label.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
 
         CRect arrow_rect = button;
@@ -213,15 +171,26 @@ private:
     }
 
     void open_picker() {
+        auto& state = MultiroomComponentState::instance();
+        state.refresh_outputs();
+        const auto outputs = state.outputs();
+
         CMenu menu;
         WIN32_OP_D(menu.CreatePopupMenu());
 
-        for (size_t index = 0; index < _countof(kDemoSpeakers); ++index) {
-            const auto& speaker = kDemoSpeakers[index];
-            UINT flags = MF_STRING;
-            if (g_selection.selected(speaker.id)) flags |= MF_CHECKED;
-            WIN32_OP_D(menu.AppendMenuW(flags, kSpeakerMenuBase + index, speaker.name));
+        if (outputs.empty()) {
+            WIN32_OP_D(menu.AppendMenuW(MF_STRING | MF_GRAYED, 0, L"No AirPlay speakers found"));
+        } else {
+            for (size_t index = 0; index < outputs.size(); ++index) {
+                const auto& output = outputs[index];
+                UINT flags = MF_STRING;
+                if (output.selected) flags |= MF_CHECKED;
+                const auto name = widen_utf8(output.name);
+                WIN32_OP_D(menu.AppendMenuW(flags, kSpeakerMenuBase + index, name.c_str()));
+            }
+            WIN32_OP_D(menu.AppendMenuW(MF_SEPARATOR, 0, nullptr));
         }
+        WIN32_OP_D(menu.AppendMenuW(MF_STRING, kRefreshCommand, L"Refresh AirPlay speakers"));
 
         CRect rc;
         WIN32_OP_D(GetWindowRect(&rc));
@@ -230,9 +199,12 @@ private:
             rc.left,
             rc.bottom,
             m_hWnd));
-        if (command >= kSpeakerMenuBase && command < kSpeakerMenuBase + _countof(kDemoSpeakers)) {
+        if (command == kRefreshCommand) {
+            state.refresh_outputs();
+            Invalidate();
+        } else if (command >= kSpeakerMenuBase && command < kSpeakerMenuBase + outputs.size()) {
             const auto index = static_cast<size_t>(command - kSpeakerMenuBase);
-            g_selection.toggle(kDemoSpeakers[index].id);
+            state.toggle_output(outputs[index].id);
             Invalidate();
         }
     }

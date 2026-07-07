@@ -63,7 +63,7 @@ void OutputRegistry::set_enabled_outputs(const std::vector<std::string>& ids) {
     }
 
     for (auto& [id, output] : outputs_) {
-        output.selected = selected.contains(id);
+        output.selected = selected.find(id) != selected.end();
     }
 }
 

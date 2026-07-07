@@ -8,7 +8,7 @@
 
 ## Phase 1 - Native Discovery And UI
 
-- Add `foo_out_multiroom_bridge` foobar component skeleton.
+- Add `foo_out_multiroom_bridge` foobar component.
 - Add native AirPlay discovery wrapper.
 - Implement speaker model and selected output state.
 - Implement per-output volume and offset.

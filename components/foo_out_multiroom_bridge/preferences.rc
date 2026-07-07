@@ -20,7 +20,7 @@ EXSTYLE WS_EX_CONTROLPARENT
 FONT 8, "MS Shell Dlg", 400, 0, 1
 {
     LTEXT      "Transport", IDC_STATIC, 11, 11, 95, 13
-    LTEXT      "Native AirPlay skeleton", idStatusSummary, 109, 11, 250, 13
+    LTEXT      "AirPlay discovery: not started", idStatusSummary, 109, 11, 250, 13
     PUSHBUTTON "Refresh speakers", idRefreshButton, 11, 35, 110, 14
 }
 
@@ -34,4 +34,3 @@ FONT 8, "MS Shell Dlg", 400, 0, 1
     PUSHBUTTON "Buy me a coffee", idSupportButton, 11, 44, 110, 14
     PUSHBUTTON "GitHub repo", idGitHubButton, 125, 44, 110, 14
 }
-

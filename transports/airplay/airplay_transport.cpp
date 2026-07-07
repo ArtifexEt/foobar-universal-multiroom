@@ -1,5 +1,6 @@
 #include "airplay_transport.h"
 
+#include <chrono>
 #include <stdexcept>
 #include <utility>
 
@@ -17,6 +18,9 @@ void AirPlayTransport::stop_discovery() {
 }
 
 std::vector<OutputDevice> AirPlayTransport::list_outputs() {
+    if (discovery_active_) {
+        discovery_.refresh(std::chrono::milliseconds(250));
+    }
     sync_discovered_outputs();
     return registry_.list();
 }
