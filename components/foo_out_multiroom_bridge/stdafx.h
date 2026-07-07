@@ -9,6 +9,9 @@
 #endif
 
 #include <windows.h>
+#include <shellapi.h>
+#include <timeapi.h>
+#include <commctrl.h>
 
 #include <helpers/foobar2000+atl.h>
 
@@ -22,4 +25,3 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-

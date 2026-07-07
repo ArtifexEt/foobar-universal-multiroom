@@ -1,4 +1,4 @@
-name: Windows CMake
+name: Windows Multiroom Build
 
 on:
   push:
@@ -10,17 +10,34 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    name: Contract probe
+    name: Build Universal Multiroom
     runs-on: windows-2022
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
+
+      - name: Set build version
+        shell: pwsh
+        run: |
+          $version = "0.1.$env:GITHUB_RUN_NUMBER"
+          if ($env:GITHUB_RUN_ATTEMPT -and $env:GITHUB_RUN_ATTEMPT -ne "1") {
+            $version = "$version-r$env:GITHUB_RUN_ATTEMPT"
+          }
+          "COMPONENT_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Component version: $version"
+          Write-Host "Release tag: v$version"
 
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -34,7 +51,6 @@ jobs:
       - name: Build foobar2000 component
         shell: pwsh
         run: |
-          $version = "0.1.$env:GITHUB_RUN_NUMBER"
           $sdkUrl = "https://www.foobar2000.org/downloads/SDK-2025-03-07.7z"
           $wtlUrl = "https://www.nuget.org/api/v2/package/wtl/10.1.0"
           New-Item -ItemType Directory -Force external | Out-Null
@@ -49,14 +65,90 @@ jobs:
           @"
           #pragma once
 
-          #define MULTIROOM_COMPONENT_VERSION "$version"
+          #define MULTIROOM_COMPONENT_VERSION "$env:COMPONENT_VERSION"
           "@ | Set-Content -Path external/foobar2000-sdk/foobar2000/foo_out_multiroom_bridge/component_version.h -Encoding ascii
           msbuild external/foobar2000-sdk/foobar2000/foo_out_multiroom_bridge/foo_out_multiroom_bridge.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -Path external/foobar2000-sdk/foobar2000/foo_out_multiroom_bridge/bin/x64/Release/foo_out_multiroom_bridge.dll -DestinationPath foo_out_multiroom_bridge.fb2k-component -Force
 
-      - name: Upload component artifact
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path external/foobar2000-sdk/foobar2000/foo_out_multiroom_bridge/bin/x64/Release/foo_out_multiroom_bridge.dll -DestinationPath foo_out_multiroom_bridge.fb2k-component -Force
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item README.md dist/
+          Copy-Item docs/ARCHITECTURE.md dist/
+          Copy-Item docs/AIRPLAY_ENGINE.md dist/
+          Copy-Item build/Release/MultiroomTransportContractProbe.exe dist/
+          Compress-Archive -Path dist/* -DestinationPath Foobar-Universal-Multiroom-windows-x64.zip -Force
+
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: foo_out_multiroom_bridge
-          path: foo_out_multiroom_bridge.fb2k-component
+          name: Foobar-Universal-Multiroom-windows-x64
+          path: |
+            Foobar-Universal-Multiroom-windows-x64.zip
+            foo_out_multiroom_bridge.fb2k-component
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = "Foobar-Universal-Multiroom-windows-x64.zip"
+          $componentAsset = "foo_out_multiroom_bridge.fb2k-component"
+
+          $tag = $env:RELEASE_TAG
+          $title = "Foobar Universal Multiroom $tag"
+
+          git fetch --tags --force
+
+          $previousTag = ""
+          try {
+            $previousTag = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=50" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name' 2>$null
+          } catch {
+            $previousTag = ""
+          }
+          if ($previousTag -eq "null") {
+            $previousTag = ""
+          }
+          if ([string]::IsNullOrWhiteSpace($previousTag)) {
+            try {
+              $previousTag = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=50" --jq '[.[] | select(.draft == false)][0].tag_name' 2>$null
+            } catch {
+              $previousTag = ""
+            }
+            if ($previousTag -eq "null") {
+              $previousTag = ""
+            }
+          }
+
+          $range = "HEAD"
+          $changesHeader = "Changes"
+          if (-not [string]::IsNullOrWhiteSpace($previousTag)) {
+            git rev-parse "$previousTag^{commit}" *> $null
+            if ($LASTEXITCODE -eq 0) {
+              $range = "$previousTag..HEAD"
+              $changesHeader = "Changes since $previousTag"
+            }
+          }
+
+          $changes = git log $range --no-merges --pretty=format:"- %s (%h)"
+          if ([string]::IsNullOrWhiteSpace($changes)) {
+            $changes = "- Build artifacts only."
+          }
+
+          @(
+            "Automated Windows build from $env:GITHUB_SHA.",
+            "",
+            "Component version: ``$env:COMPONENT_VERSION``.",
+            "",
+            "## Downloads",
+            "- ``foo_out_multiroom_bridge.fb2k-component`` - foobar2000 Universal Multiroom Bridge component",
+            "- ``Foobar-Universal-Multiroom-windows-x64.zip`` - README, architecture notes, and contract probe",
+            "",
+            "## $changesHeader",
+            $changes
+          ) | Set-Content -Path release-notes.md -Encoding utf8
+
+          gh release create $tag $asset $componentAsset --title $title --notes-file release-notes.md --target $env:GITHUB_SHA

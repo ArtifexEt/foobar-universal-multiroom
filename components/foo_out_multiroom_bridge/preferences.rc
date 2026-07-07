@@ -1,0 +1,37 @@
+#include "preferences_resource.h"
+
+#include <winres.h>
+#include <commctrl.h>
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+
+IDD_MULTIROOM_PREFERENCES DIALOGEX 0, 0, 507, 290
+STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 8, "MS Shell Dlg", 400, 0, 1
+{
+    CONTROL "", idTabs, "SysTabControl32", TCS_TABS | WS_TABSTOP, 5, 5, 496, 280
+}
+
+IDD_MULTIROOM_PAGE_STATUS DIALOGEX 0, 0, 480, 305
+STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 8, "MS Shell Dlg", 400, 0, 1
+{
+    LTEXT      "Transport", IDC_STATIC, 11, 11, 95, 13
+    LTEXT      "Native AirPlay skeleton", idStatusSummary, 109, 11, 250, 13
+    PUSHBUTTON "Refresh speakers", idRefreshButton, 11, 35, 110, 14
+}
+
+IDD_MULTIROOM_PAGE_ABOUT DIALOGEX 0, 0, 480, 305
+STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 8, "MS Shell Dlg", 400, 0, 1
+{
+    LTEXT      "Universal Multiroom Bridge", IDC_STATIC, 11, 9, 250, 13
+    LTEXT      "", idAboutVersion, 11, 25, 250, 13
+    PUSHBUTTON "Buy me a coffee", idSupportButton, 11, 44, 110, 14
+    PUSHBUTTON "GitHub repo", idGitHubButton, 125, 44, 110, 14
+}
+
