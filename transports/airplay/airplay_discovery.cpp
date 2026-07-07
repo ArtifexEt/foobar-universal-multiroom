@@ -11,6 +11,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -85,14 +86,15 @@ void append_dns_name(std::vector<uint8_t>& packet, const char* name) {
     packet.push_back(0);
 }
 
-std::vector<uint8_t> make_ptr_query(const char* service) {
+std::vector<uint8_t> make_ptr_query(const char* service, bool request_unicast_response) {
     std::vector<uint8_t> packet(12, 0);
     packet[5] = 1;
     append_dns_name(packet, service);
     packet.push_back(0);
     packet.push_back(static_cast<uint8_t>(kDnsTypePtr));
-    packet.push_back(static_cast<uint8_t>((kDnsClassIn | kDnsClassUnicastResponse) >> 8));
-    packet.push_back(static_cast<uint8_t>((kDnsClassIn | kDnsClassUnicastResponse) & 0xFF));
+    const uint16_t question_class = request_unicast_response ? (kDnsClassIn | kDnsClassUnicastResponse) : kDnsClassIn;
+    packet.push_back(static_cast<uint8_t>(question_class >> 8));
+    packet.push_back(static_cast<uint8_t>(question_class & 0xFF));
     return packet;
 }
 
@@ -395,6 +397,70 @@ public:
     }
 };
 
+std::vector<in_addr> local_ipv4_interfaces() {
+    std::vector<in_addr> result;
+
+    ULONG buffer_size = 15 * 1024;
+    std::vector<uint8_t> buffer(buffer_size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    ULONG rc = GetAdaptersAddresses(
+        AF_INET,
+        GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_DNS_SERVER,
+        nullptr,
+        adapters,
+        &buffer_size);
+    if (rc == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(buffer_size);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+        rc = GetAdaptersAddresses(
+            AF_INET,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_DNS_SERVER,
+            nullptr,
+            adapters,
+            &buffer_size);
+    }
+    if (rc != NO_ERROR) return result;
+
+    for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp) continue;
+        if ((adapter->Flags & IP_ADAPTER_NO_MULTICAST) != 0) continue;
+
+        for (auto* address = adapter->FirstUnicastAddress; address != nullptr; address = address->Next) {
+            if (address->Address.lpSockaddr == nullptr ||
+                address->Address.lpSockaddr->sa_family != AF_INET) {
+                continue;
+            }
+
+            auto* ipv4 = reinterpret_cast<sockaddr_in*>(address->Address.lpSockaddr);
+            if (ipv4->sin_addr.s_addr == htonl(INADDR_LOOPBACK) ||
+                ipv4->sin_addr.s_addr == htonl(INADDR_ANY)) {
+                continue;
+            }
+            result.push_back(ipv4->sin_addr);
+        }
+    }
+
+    return result;
+}
+
+void join_mdns_multicast(SOCKET socket_handle) {
+    const auto interfaces = local_ipv4_interfaces();
+    if (interfaces.empty()) {
+        ip_mreq request = {};
+        inet_pton(AF_INET, "224.0.0.251", &request.imr_multiaddr);
+        request.imr_interface.s_addr = htonl(INADDR_ANY);
+        setsockopt(socket_handle, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&request), sizeof(request));
+        return;
+    }
+
+    for (const auto& interface_address : interfaces) {
+        ip_mreq request = {};
+        inet_pton(AF_INET, "224.0.0.251", &request.imr_multiaddr);
+        request.imr_interface = interface_address;
+        setsockopt(socket_handle, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&request), sizeof(request));
+    }
+}
+
 std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
     WinsockSession winsock;
     const SOCKET socket_handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -408,14 +474,23 @@ std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
 
     DWORD timeout_ms = static_cast<DWORD>(std::max<int64_t>(1, timeout.count()));
     setsockopt(socket_handle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    BOOL reuse_addr = TRUE;
+    setsockopt(socket_handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse_addr), sizeof(reuse_addr));
+    DWORD ttl = 255;
+    setsockopt(socket_handle, IPPROTO_IP, IP_MULTICAST_TTL, reinterpret_cast<const char*>(&ttl), sizeof(ttl));
 
     sockaddr_in bind_addr = {};
     bind_addr.sin_family = AF_INET;
     bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    bind_addr.sin_port = 0;
+    bind_addr.sin_port = htons(5353);
     if (bind(socket_handle, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) == SOCKET_ERROR) {
-        close_socket();
-        throw std::runtime_error("Could not bind mDNS UDP socket.");
+        bind_addr.sin_port = 0;
+        if (bind(socket_handle, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) == SOCKET_ERROR) {
+            close_socket();
+            throw std::runtime_error("Could not bind mDNS UDP socket.");
+        }
+    } else {
+        join_mdns_multicast(socket_handle);
     }
 
     sockaddr_in multicast = {};
@@ -423,8 +498,14 @@ std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
     multicast.sin_port = htons(5353);
     inet_pton(AF_INET, "224.0.0.251", &multicast.sin_addr);
 
+    sockaddr_in local_addr = {};
+    int local_addr_len = sizeof(local_addr);
+    const bool request_unicast_response =
+        getsockname(socket_handle, reinterpret_cast<sockaddr*>(&local_addr), &local_addr_len) == 0 &&
+        ntohs(local_addr.sin_port) != 5353;
+
     for (const auto* service : {kAirPlayService, kRaopService}) {
-        const auto query = make_ptr_query(service);
+        const auto query = make_ptr_query(service, request_unicast_response);
         sendto(socket_handle,
                reinterpret_cast<const char*>(query.data()),
                static_cast<int>(query.size()),

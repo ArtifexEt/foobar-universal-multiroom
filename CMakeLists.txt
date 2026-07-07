@@ -43,7 +43,7 @@ if(MSVC)
 endif()
 
 if(WIN32)
-    target_link_libraries(MultiroomCore PUBLIC ws2_32)
+    target_link_libraries(MultiroomCore PUBLIC ws2_32 iphlpapi)
 endif()
 
 target_link_libraries(MultiroomCore PUBLIC airplay_crypto)

@@ -35,5 +35,6 @@ private:
     std::vector<multiroom::OutputDevice> cached_outputs_;
     bool discovery_started_ = false;
     bool playback_open_ = false;
+    size_t refresh_count_ = 0;
     std::wstring last_error_;
 };

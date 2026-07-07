@@ -43,9 +43,25 @@ void MultiroomComponentState::refresh_outputs() {
     try {
         ensure_discovery_started();
         cached_outputs_ = transport_.list_outputs();
+        ++refresh_count_;
         last_error_.clear();
+        FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery refresh #" << refresh_count_
+                                  << ": " << cached_outputs_.size() << " device(s)";
+        for (const auto& output : cached_outputs_) {
+            FB2K_console_formatter() << "[Universal Multiroom] AirPlay device: "
+                                      << output.name.c_str()
+                                      << " id=" << output.id.c_str()
+                                      << " endpoint=" << output.endpoint_host.c_str()
+                                      << ":" << output.endpoint_port
+                                      << " airplay2=" << (output.supports_airplay2 ? "yes" : "no")
+                                      << " legacy=" << (output.supports_legacy_l16 ? "yes" : "no")
+                                      << " auth=" << (output.requires_auth ? "yes" : "no")
+                                      << " format=" << output.format.c_str();
+        }
     } catch (const std::exception& e) {
+        ++refresh_count_;
         last_error_ = widen_utf8(e.what());
+        FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery failed: " << e.what();
     }
 }
 
@@ -187,6 +203,7 @@ std::wstring MultiroomComponentState::status_text() {
     std::wstringstream stream;
     stream << L"AirPlay discovery: " << cached_outputs_.size() << L" speaker";
     if (cached_outputs_.size() != 1) stream << L"s";
-    stream << L", " << selected << L" selected";
+    stream << L", " << selected << L" selected, " << refresh_count_ << L" scan";
+    if (refresh_count_ != 1) stream << L"s";
     return stream.str();
 }

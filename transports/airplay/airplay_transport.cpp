@@ -22,7 +22,7 @@ void AirPlayTransport::stop_discovery() {
 
 std::vector<OutputDevice> AirPlayTransport::list_outputs() {
     if (discovery_active_) {
-        discovery_.refresh(std::chrono::milliseconds(250));
+        discovery_.refresh(std::chrono::milliseconds(1500));
     }
     sync_discovered_outputs();
     return registry_.list();

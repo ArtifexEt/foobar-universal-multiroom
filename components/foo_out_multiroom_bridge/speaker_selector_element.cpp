@@ -235,15 +235,16 @@ private:
         volume_labels_.clear();
 
         if (outputs_.empty()) {
+            const auto status = MultiroomComponentState::instance().status_text();
             add_control(::CreateWindowExW(
                 0,
                 L"STATIC",
-                L"No AirPlay speakers found",
-                WS_CHILD | WS_VISIBLE | SS_CENTER,
+                status.empty() ? L"No AirPlay speakers found" : status.c_str(),
+                WS_CHILD | WS_VISIBLE | SS_CENTER | SS_EDITCONTROL,
                 kPopupPadding,
-                kHeaderHeight + 18,
+                kHeaderHeight + 12,
                 kPopupWidth - (kPopupPadding * 2),
-                24,
+                42,
                 m_hWnd,
                 reinterpret_cast<HMENU>(kEmptyStatusId),
                 core_api::get_my_instance(),

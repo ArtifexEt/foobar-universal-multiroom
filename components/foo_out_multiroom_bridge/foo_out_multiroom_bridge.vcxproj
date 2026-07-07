@@ -63,7 +63,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <AdditionalLibraryDirectories>$(AirPlay2SenderBuildRoot)\$(Configuration);$(AirPlay2SenderBuildRoot)\_deps\mbedtls-build\library\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>airplay_crypto.lib;mbedcrypto.lib;ed25519.lib;../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>airplay_crypto.lib;mbedcrypto.lib;ed25519.lib;../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;iphlpapi.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -85,7 +85,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>$(AirPlay2SenderBuildRoot)\$(Configuration);$(AirPlay2SenderBuildRoot)\_deps\mbedtls-build\library\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>airplay_crypto.lib;mbedcrypto.lib;ed25519.lib;../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>airplay_crypto.lib;mbedcrypto.lib;ed25519.lib;../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;iphlpapi.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
