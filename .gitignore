@@ -1,0 +1,15 @@
+build/
+dist/
+external/
+*.user
+*.suo
+*.log
+*.fb2k-component
+*.dll
+*.pdb
+*.obj
+*.ilk
+*.tlog
+bin/
+obj/
+
