@@ -444,7 +444,7 @@ public:
     }
 
     static GUID g_get_subclass() {
-        return ui_element_subclass_playback_information;
+        return ui_element_subclass_utility;
     }
 
     static void g_get_name(pfc::string_base& out) {
