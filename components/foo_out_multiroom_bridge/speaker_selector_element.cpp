@@ -71,7 +71,7 @@ public:
     DECLARE_WND_CLASS_EX(TEXT("{4F175C3D-7D32-4BB3-A724-4A24472343C3}"), CS_VREDRAW | CS_HREDRAW, -1);
 
     SpeakerSelectorElement(ui_element_config::ptr config, ui_element_instance_callback_ptr callback)
-        : callback_(callback)
+        : m_callback(callback)
         , config_(config) {}
 
     void initialize_window(HWND parent) {
@@ -135,12 +135,15 @@ public:
         MESSAGE_HANDLER(WM_KILLFOCUS, on_focus_changed)
     END_MSG_MAP()
 
+protected:
+    const ui_element_instance_callback_ptr m_callback;
+
 private:
     BOOL on_erase_background(CDCHandle dc) {
         CRect rc;
         WIN32_OP_D(GetClientRect(&rc));
         CBrush brush;
-        WIN32_OP_D(brush.CreateSolidBrush(callback_->query_std_color(ui_color_background)) != nullptr);
+        WIN32_OP_D(brush.CreateSolidBrush(m_callback->query_std_color(ui_color_background)) != nullptr);
         WIN32_OP_D(dc.FillRect(&rc, brush));
         return TRUE;
     }
@@ -150,9 +153,9 @@ private:
         CRect rc;
         WIN32_OP_D(GetClientRect(&rc));
 
-        const COLORREF background = callback_->query_std_color(ui_color_background);
-        const COLORREF text = callback_->query_std_color(ui_color_text);
-        const COLORREF border = callback_->query_std_color(ui_color_text);
+        const COLORREF background = m_callback->query_std_color(ui_color_background);
+        const COLORREF text = m_callback->query_std_color(ui_color_text);
+        const COLORREF border = m_callback->query_std_color(ui_color_text);
 
         CBrush background_brush;
         WIN32_OP_D(background_brush.CreateSolidBrush(background) != nullptr);
@@ -168,7 +171,7 @@ private:
 
         dc.SetTextColor(text);
         dc.SetBkMode(TRANSPARENT);
-        SelectObjectScope font_scope(dc, reinterpret_cast<HGDIOBJ>(callback_->query_font_ex(ui_font_default)));
+        SelectObjectScope font_scope(dc, reinterpret_cast<HGDIOBJ>(m_callback->query_font_ex(ui_font_default)));
 
         CRect text_rect = button;
         text_rect.DeflateRect(8, 1, 22, 1);
@@ -234,7 +237,6 @@ private:
         }
     }
 
-    ui_element_instance_callback_ptr callback_;
     ui_element_config::ptr config_;
 };
 
