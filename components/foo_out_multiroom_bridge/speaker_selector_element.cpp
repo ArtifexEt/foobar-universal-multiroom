@@ -179,7 +179,7 @@ private:
         WIN32_OP_D(menu.CreatePopupMenu());
 
         if (outputs.empty()) {
-            WIN32_OP_D(menu.AppendMenuW(MF_STRING | MF_GRAYED, 0, L"No AirPlay speakers found"));
+            WIN32_OP_D(menu.AppendMenuW(MF_STRING | MF_GRAYED, static_cast<UINT_PTR>(0), L"No AirPlay speakers found"));
         } else {
             for (size_t index = 0; index < outputs.size(); ++index) {
                 const auto& output = outputs[index];
@@ -188,7 +188,7 @@ private:
                 const auto name = widen_utf8(output.name);
                 WIN32_OP_D(menu.AppendMenuW(flags, kSpeakerMenuBase + index, name.c_str()));
             }
-            WIN32_OP_D(menu.AppendMenuW(MF_SEPARATOR, 0, nullptr));
+            WIN32_OP_D(menu.AppendMenuW(MF_SEPARATOR, static_cast<UINT_PTR>(0), static_cast<LPCWSTR>(nullptr)));
         }
         WIN32_OP_D(menu.AppendMenuW(MF_STRING, kRefreshCommand, L"Refresh AirPlay speakers"));
 
