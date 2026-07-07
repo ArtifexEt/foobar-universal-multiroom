@@ -37,27 +37,36 @@ std::wstring widen(const char* text) {
     return result;
 }
 
-class preferences_instance : public preferences_page_instance {
+class preferences_instance : public CDialogImpl<preferences_instance>, public preferences_page_instance {
 public:
+    enum { IDD = IDD_MULTIROOM_PREFERENCES };
+
     preferences_instance(preferences_page_callback::ptr callback)
         : callback_(std::move(callback)) {}
 
-    HWND get_wnd() override { return wnd_; }
+    preferences_instance(const preferences_instance&) = delete;
+    preferences_instance& operator=(const preferences_instance&) = delete;
 
-    HWND create(HWND parent) override {
-        INITCOMMONCONTROLSEX cc = {};
-        cc.dwSize = sizeof(cc);
-        cc.dwICC = ICC_TAB_CLASSES | ICC_WIN95_CLASSES;
-        InitCommonControlsEx(&cc);
-
-        wnd_ = CreateDialogParamW(
-            core_api::get_my_instance(),
-            MAKEINTRESOURCEW(IDD_MULTIROOM_PREFERENCES),
-            parent,
-            dialog_proc,
-            reinterpret_cast<LPARAM>(this));
-        return wnd_;
+    ~preferences_instance() {
+        DeleteObject(background_brush_);
+        DeleteObject(edit_brush_);
     }
+
+    BEGIN_MSG_MAP_EX(preferences_instance)
+        MESSAGE_HANDLER(WM_INITDIALOG, on_init_dialog_message)
+        MESSAGE_HANDLER(WM_ERASEBKGND, on_erase_message)
+        MESSAGE_HANDLER(WM_COMMAND, on_command_message)
+        MESSAGE_HANDLER(WM_SIZE, on_size_message)
+        MESSAGE_HANDLER(WM_DPICHANGED, on_dpi_changed_message)
+        MESSAGE_HANDLER(WM_DPICHANGED_AFTERPARENT, on_dpi_changed_message)
+        MESSAGE_HANDLER(WM_THEMECHANGED, on_theme_changed_message)
+        MESSAGE_HANDLER(WM_SETTINGCHANGE, on_theme_changed_message)
+        MESSAGE_HANDLER(WM_CTLCOLOREDIT, on_control_color_message)
+        MESSAGE_HANDLER(WM_CTLCOLORSTATIC, on_control_color_message)
+        MESSAGE_HANDLER(WM_CTLCOLORBTN, on_control_color_message)
+        MESSAGE_HANDLER(WM_CTLCOLORDLG, on_control_color_message)
+        MESSAGE_HANDLER(WM_NOTIFY, on_notify_message)
+    END_MSG_MAP()
 
     t_uint32 get_state() override {
         return preferences_state::resettable | preferences_state::dark_mode_supported;
@@ -67,40 +76,24 @@ public:
     void reset() override {}
 
 private:
-    static INT_PTR CALLBACK dialog_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
-        auto* self = reinterpret_cast<preferences_instance*>(::GetWindowLongPtrW(wnd, GWLP_USERDATA));
-        if (msg == WM_INITDIALOG) {
-            self = reinterpret_cast<preferences_instance*>(lp);
-            ::SetWindowLongPtrW(wnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-            return self->on_init(wnd);
-        }
-        if (self == nullptr) return FALSE;
+    LRESULT on_init_dialog_message(UINT, WPARAM, LPARAM, BOOL&) {
+        INITCOMMONCONTROLSEX cc = {};
+        cc.dwSize = sizeof(cc);
+        cc.dwICC = ICC_TAB_CLASSES | ICC_WIN95_CLASSES;
+        InitCommonControlsEx(&cc);
 
-        switch (msg) {
-        case WM_ERASEBKGND:
-            return self->on_erase(wnd, reinterpret_cast<HDC>(wp));
-        case WM_COMMAND:
-            return self->on_command(wp);
-        case WM_SIZE:
-        case WM_DPICHANGED:
-        case WM_DPICHANGED_AFTERPARENT:
-            self->position_pages();
-            return TRUE;
-        case WM_THEMECHANGED:
-        case WM_SETTINGCHANGE:
-            self->redraw();
-            return TRUE;
-        case WM_CTLCOLOREDIT:
-        case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLORBTN:
-        case WM_CTLCOLORDLG:
-            return self->on_control_color(reinterpret_cast<HDC>(wp), reinterpret_cast<HWND>(lp), msg);
-        case WM_NOTIFY:
-            return self->on_notify(reinterpret_cast<NMHDR*>(lp));
-        default:
-            return FALSE;
-        }
+        return on_init(m_hWnd);
     }
+
+    LRESULT on_erase_message(UINT, WPARAM wp, LPARAM, BOOL&) { return on_erase(m_hWnd, reinterpret_cast<HDC>(wp)); }
+    LRESULT on_command_message(UINT, WPARAM wp, LPARAM, BOOL&) { return on_command(wp); }
+    LRESULT on_size_message(UINT, WPARAM, LPARAM, BOOL&) { position_pages(); return TRUE; }
+    LRESULT on_dpi_changed_message(UINT, WPARAM, LPARAM, BOOL&) { position_pages(); return TRUE; }
+    LRESULT on_theme_changed_message(UINT, WPARAM, LPARAM, BOOL&) { redraw(); return TRUE; }
+    LRESULT on_control_color_message(UINT msg, WPARAM wp, LPARAM lp, BOOL&) {
+        return on_control_color(reinterpret_cast<HDC>(wp), reinterpret_cast<HWND>(lp), msg);
+    }
+    LRESULT on_notify_message(UINT, WPARAM, LPARAM lp, BOOL&) { return on_notify(reinterpret_cast<NMHDR*>(lp)); }
 
     static INT_PTR CALLBACK page_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto* self = reinterpret_cast<preferences_instance*>(::GetWindowLongPtrW(wnd, GWLP_USERDATA));
@@ -294,4 +287,3 @@ public:
 static preferences_page_factory_t<preferences_page_multiroom> g_preferences_factory;
 
 }  // namespace
-

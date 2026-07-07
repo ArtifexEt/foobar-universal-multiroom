@@ -14,6 +14,8 @@
 #include <commctrl.h>
 
 #include <helpers/foobar2000+atl.h>
+#include <helpers/atl-misc.h>
+#include <SDK/coreDarkMode.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -24,4 +26,5 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
