@@ -1,8 +1,8 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
+#include "speaker_selector_popup.h"
 
 #include <commctrl.h>
-#include <helpers/BumpableElem.h>
 #include <libPPUI/win32_op.h>
 
 namespace {
@@ -19,6 +19,7 @@ static constexpr int kPopupPadding = 12;
 static constexpr int kHeaderHeight = 34;
 static constexpr int kRowHeight = 58;
 static constexpr int kFooterHeight = 42;
+static constexpr int kToolbarHeight = 28;
 
 std::wstring widen_utf8(const std::string& text) {
     if (text.empty()) return {};
@@ -79,17 +80,23 @@ public:
         InitCommonControlsEx(&cc);
 
         CRect anchor_rect;
-        WIN32_OP_D(::GetWindowRect(anchor, &anchor_rect));
+        if (anchor != nullptr && ::IsWindow(anchor)) {
+            WIN32_OP_D(::GetWindowRect(anchor, &anchor_rect));
+        } else {
+            POINT cursor = {};
+            WIN32_OP_D(::GetCursorPos(&cursor));
+            anchor_rect.SetRect(cursor.x, cursor.y, cursor.x, cursor.y);
+        }
 
         const int height = popup_height();
         CRect popup_rect(anchor_rect.left, anchor_rect.bottom + 4, anchor_rect.left + kPopupWidth, anchor_rect.bottom + 4 + height);
         keep_on_monitor(popup_rect);
 
         WIN32_OP(Create(
-            owner_,
+            owner_ == nullptr ? core_api::get_main_window() : owner_,
             popup_rect,
             nullptr,
-            WS_POPUP | WS_BORDER | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST) != nullptr);
         ShowWindow(SW_SHOW);
         SetFocus();
@@ -131,7 +138,7 @@ private:
 
         dc.SetBkMode(TRANSPARENT);
         dc.SetTextColor(text_color());
-        SelectObjectScope font_scope(dc, reinterpret_cast<HGDIOBJ>(callback_->query_font_ex(ui_font_default)));
+        SelectObjectScope font_scope(dc, popup_font());
 
         CRect header(kPopupPadding, 8, rc.right - kPopupPadding, kHeaderHeight);
         WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &header, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX) > 0);
@@ -169,7 +176,7 @@ private:
             rebuild_controls();
             resize_to_content();
             Invalidate();
-            ::InvalidateRect(owner_, nullptr, TRUE);
+            if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
             return 0;
         }
 
@@ -179,7 +186,7 @@ private:
             outputs_ = MultiroomComponentState::instance().outputs();
             sync_control_values();
             Invalidate();
-            ::InvalidateRect(owner_, nullptr, TRUE);
+            if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
             return 0;
         }
 
@@ -206,7 +213,7 @@ private:
             ::SetWindowTextW(volume_labels_[index], text.c_str());
         }
 
-        ::InvalidateRect(owner_, nullptr, TRUE);
+        if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
         return 0;
     }
 
@@ -392,11 +399,15 @@ private:
     }
 
     COLORREF background_color() const {
-        return callback_->query_std_color(ui_color_background);
+        return callback_.is_valid() ? callback_->query_std_color(ui_color_background) : GetSysColor(COLOR_WINDOW);
     }
 
     COLORREF text_color() const {
-        return callback_->query_std_color(ui_color_text);
+        return callback_.is_valid() ? callback_->query_std_color(ui_color_text) : GetSysColor(COLOR_WINDOWTEXT);
+    }
+
+    HGDIOBJ popup_font() const {
+        return callback_.is_valid() ? reinterpret_cast<HGDIOBJ>(callback_->query_font_ex(ui_font_default)) : GetStockObject(DEFAULT_GUI_FONT);
     }
 
     COLORREF subtle_color() const {
@@ -425,7 +436,7 @@ public:
         , config_(config) {}
 
     void initialize_window(HWND parent) {
-        WIN32_OP(Create(parent) != nullptr);
+        WIN32_OP(Create(parent, nullptr, nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN) != nullptr);
     }
 
     HWND get_wnd() override {
@@ -463,9 +474,9 @@ public:
     ui_element_min_max_info get_min_max_info() override {
         ui_element_min_max_info info;
         info.m_min_width = 120;
-        info.m_min_height = 24;
-        info.m_max_width = 1000;
-        info.m_max_height = 44;
+        info.m_min_height = kToolbarHeight;
+        info.m_max_width = 220;
+        info.m_max_height = kToolbarHeight;
         return info;
     }
 
@@ -505,32 +516,35 @@ private:
 
         const COLORREF background = m_callback->query_std_color(ui_color_background);
         const COLORREF text = m_callback->query_std_color(ui_color_text);
-        const COLORREF border = m_callback->query_std_color(ui_color_text);
+        const COLORREF border = blend_color(background, text, 35);
 
         CBrush background_brush;
         WIN32_OP_D(background_brush.CreateSolidBrush(background) != nullptr);
         WIN32_OP_D(dc.FillRect(&rc, background_brush));
 
         CRect button = rc;
-        button.DeflateRect(2, 2);
+        button.DeflateRect(1, 1);
         CPen border_pen;
         WIN32_OP_D(border_pen.CreatePen(PS_SOLID, 1, border) != nullptr);
         SelectObjectScope pen_scope(dc, border_pen);
-        SelectObjectScope brush_scope(dc, GetStockObject(NULL_BRUSH));
-        WIN32_OP_D(dc.RoundRect(&button, CPoint(6, 6)));
+        CBrush button_brush;
+        WIN32_OP_D(button_brush.CreateSolidBrush(blend_color(background, text, 8)) != nullptr);
+        SelectObjectScope brush_scope(dc, button_brush);
+        WIN32_OP_D(dc.RoundRect(&button, CPoint(5, 5)));
 
         dc.SetTextColor(text);
         dc.SetBkMode(TRANSPARENT);
         SelectObjectScope font_scope(dc, reinterpret_cast<HGDIOBJ>(m_callback->query_font_ex(ui_font_default)));
 
         CRect text_rect = button;
-        text_rect.DeflateRect(8, 1, 22, 1);
+        text_rect.DeflateRect(9, 1, 22, 1);
         const auto label = MultiroomComponentState::instance().selected_label();
-        WIN32_OP_D(dc.DrawTextW(label.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+        const auto display = label == L"No speakers" ? L"AirPlay" : label;
+        WIN32_OP_D(dc.DrawTextW(display.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
 
         CRect arrow_rect = button;
         arrow_rect.left = arrow_rect.right - 18;
-        WIN32_OP_D(dc.DrawTextW(L"v", -1, &arrow_rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+        WIN32_OP_D(dc.DrawTextW(L"\x25BE", -1, &arrow_rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
 
         if (GetFocus() == m_hWnd) {
             CRect focus = button;
@@ -570,8 +584,11 @@ private:
     ui_element_config::ptr config_;
 };
 
-class SpeakerSelectorElementFactory : public ui_element_impl_withpopup<SpeakerSelectorElement> {};
-
-static service_factory_single_t<SpeakerSelectorElementFactory> g_speaker_selector_factory;
+static service_factory_single_t<ui_element_impl<SpeakerSelectorElement>> g_speaker_selector_factory;
 
 }  // namespace
+
+void show_multiroom_speaker_picker(HWND owner, HWND anchor) {
+    auto* popup = new SpeakerPickerPopup(owner, nullptr);
+    popup->open_below(anchor);
+}

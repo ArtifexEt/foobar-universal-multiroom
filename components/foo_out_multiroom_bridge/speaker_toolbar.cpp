@@ -1,12 +1,10 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
+#include "speaker_selector_popup.h"
 
 #include <algorithm>
 
 namespace {
-
-static constexpr GUID guid_speaker_selector_element = {
-    0x4f175c3d, 0x7d32, 0x4bb3, {0xa7, 0x24, 0x4a, 0x24, 0x47, 0x23, 0x43, 0xc3}};
 
 static constexpr GUID guid_airplay_toolbar_dropdown = {
     0x7d6e76d4, 0x47b0, 0x4af9, {0x82, 0x57, 0x27, 0x2d, 0xb2, 0x36, 0x8b, 0x8e}};
@@ -16,6 +14,9 @@ static constexpr GUID guid_multiroom_menu_group = {
 
 static constexpr GUID guid_open_speaker_selector = {
     0xd8af4c86, 0x63e6, 0x42ab, {0xa4, 0x66, 0xb6, 0xee, 0x7e, 0x89, 0x5d, 0x74}};
+
+static constexpr GUID guid_toolbar_speaker_selector = {
+    0xa9f2a3d3, 0x6392, 0x4828, {0x9d, 0xdb, 0xf0, 0x76, 0xdb, 0xf1, 0xe1, 0xbd}};
 
 bool output_playable(const multiroom::OutputDevice& output) {
     return output.supports_airplay2 &&
@@ -185,10 +186,7 @@ public:
         switch (index) {
         case cmd_open_speaker_selector:
             MultiroomComponentState::instance().refresh_outputs();
-            ui_element_common_methods_v2::get()->spawn_host_simple(
-                core_api::get_main_window(),
-                guid_speaker_selector_element,
-                false);
+            show_multiroom_speaker_picker(core_api::get_main_window(), nullptr);
             break;
         default:
             uBugCheck();
@@ -197,5 +195,67 @@ public:
 };
 
 static mainmenu_commands_factory_t<MultiroomMainMenuCommands> g_multiroom_mainmenu_commands_factory;
+
+class MultiroomPlaybackMenuCommands : public mainmenu_commands {
+public:
+    enum {
+        cmd_airplay_speakers = 0,
+        cmd_total
+    };
+
+    t_uint32 get_command_count() override {
+        return cmd_total;
+    }
+
+    GUID get_command(t_uint32 index) override {
+        switch (index) {
+        case cmd_airplay_speakers:
+            return guid_toolbar_speaker_selector;
+        default:
+            uBugCheck();
+        }
+    }
+
+    void get_name(t_uint32 index, pfc::string_base& out) override {
+        switch (index) {
+        case cmd_airplay_speakers:
+            out = "AirPlay Speakers...";
+            break;
+        default:
+            uBugCheck();
+        }
+    }
+
+    bool get_description(t_uint32 index, pfc::string_base& out) override {
+        switch (index) {
+        case cmd_airplay_speakers:
+            out = "Opens the Universal Multiroom AirPlay speaker picker.";
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    GUID get_parent() override {
+        return mainmenu_groups::playback_controls;
+    }
+
+    t_uint32 get_sort_priority() override {
+        return mainmenu_commands::sort_priority_base + 900;
+    }
+
+    void execute(t_uint32 index, service_ptr_t<service_base>) override {
+        switch (index) {
+        case cmd_airplay_speakers:
+            MultiroomComponentState::instance().refresh_outputs();
+            show_multiroom_speaker_picker(core_api::get_main_window(), nullptr);
+            break;
+        default:
+            uBugCheck();
+        }
+    }
+};
+
+static mainmenu_commands_factory_t<MultiroomPlaybackMenuCommands> g_multiroom_playback_commands_factory;
 
 }  // namespace
