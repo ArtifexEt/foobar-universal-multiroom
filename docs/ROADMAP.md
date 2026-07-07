@@ -65,3 +65,11 @@ Acceptance:
 - Add HEOS transport contract implementation.
 - Add Music Assistant transport if its API is a better universal abstraction.
 - Add Snapcast transport if low-latency synchronized local zones are desired.
+
+## Platform TODO
+
+- Keep the transport/core layer portable so it can later run outside the Windows
+  foobar2000 component, for example as a reusable library, helper service, or
+  non-Windows host integration.
+- Keep Windows-specific UI and foobar SDK code isolated from discovery,
+  scheduling, and transport session logic.

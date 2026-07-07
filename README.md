@@ -18,6 +18,8 @@ other renderers can be added later without changing the foobar UI.
 - Preserve local playback through the existing foobar output/spatial renderer
   when desired.
 - Support future transports such as HEOS without changing the foobar-facing UI.
+- Keep transport/core code portable enough to support non-Windows hosts later,
+  even though the current foobar2000 component build targets Windows.
 
 ## Current Implementation
 
@@ -30,6 +32,12 @@ other renderers can be added later without changing the foobar UI.
 - The transport-neutral core includes output state, packet scheduling, stream
   clocking, and the AirPlay transport boundary.
 - AirPlay playback/session negotiation is the next large implementation area.
+
+## TODO
+
+- Define the non-Windows support path for reusable transport/core pieces, such
+  as a future service, helper, or library build outside the Windows foobar2000
+  component.
 
 ## Repository Layout
 
