@@ -39,12 +39,6 @@ transport handles discovery, session setup, packet timing, speaker volume, and
 offset control. Other systems should implement the same internal transport
 contract.
 
-## Prior Art
-
-OwnTone was reviewed as a feature baseline for AirPlay multiroom behavior. This
-project is not an OwnTone wrapper and should not depend on its server, API, or
-code.
-
 ## Repository Layout
 
 - `components/foo_out_multiroom_bridge/` - foobar2000 component plan and public

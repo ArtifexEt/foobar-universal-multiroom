@@ -1,6 +1,6 @@
 # Risks
 
-## Licensing And Prior Art
+## Licensing
 
 Do not import third-party AirPlay implementation code unless the license and
 distribution model are explicitly chosen first. The safest path is a clean-room
