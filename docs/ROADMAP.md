@@ -4,7 +4,6 @@
 
 - Create separate project on `D:`.
 - Record architecture and transport contract.
-- Keep the component independent from `foobar-for-home-theater`.
 - Add lightweight CMake sanity target.
 
 ## Phase 1 - Native Discovery And UI
@@ -59,8 +58,7 @@ Acceptance:
 
 - Add optional local output fanout design.
 - Measure or configure delay between local endpoint and network outputs.
-- Decide whether this belongs in the bridge plugin or a shared PCM tap with
-  `foobar-for-home-theater`.
+- Decide whether this belongs in the bridge plugin or a shared PCM tap.
 
 ## Phase 6 - More Transports
 

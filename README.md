@@ -9,11 +9,6 @@ speaker selection, stream scheduling, and synchronization itself. The transport
 boundary stays generic so HEOS, Music Assistant, Chromecast groups, Snapcast, or
 other renderers can be added later without changing the foobar UI.
 
-This project is intentionally separate from `foobar-for-home-theater`. The home
-theater project owns Windows Spatial Audio rendering. This project owns
-multiroom transport and speaker selection. They can later share a PCM tap or
-profile concepts, but neither should be forced into the other.
-
 ## Goals
 
 - Play the same foobar2000 music at the same time on selected AirPlay speakers.
@@ -65,15 +60,14 @@ code.
 
 ## Build
 
-The current CMake target is only a tiny contract probe so CI has a cheap sanity
-check while the real foobar SDK project is added.
+The current CMake build covers the transport-neutral core and a small contract
+probe while the real foobar SDK project is added.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-The real component build should follow the pattern in `foobar-for-home-theater`:
-download the foobar2000 SDK in CI, copy `components/foo_out_multiroom_bridge`
-into the SDK tree, build with MSBuild, then package the DLL as
-`foo_out_multiroom_bridge.fb2k-component`.
+The real component build should download the foobar2000 SDK in CI, copy
+`components/foo_out_multiroom_bridge` into the SDK tree, build with MSBuild, then
+package the DLL as `foo_out_multiroom_bridge.fb2k-component`.
