@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <utility>
@@ -10,6 +11,9 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #endif
 
 namespace multiroom::airplay {
@@ -17,9 +21,12 @@ namespace multiroom::airplay {
 namespace {
 
 constexpr uint16_t kDnsTypePtr = 12;
+constexpr uint16_t kDnsTypeA = 1;
+constexpr uint16_t kDnsTypeAaaa = 28;
 constexpr uint16_t kDnsTypeTxt = 16;
 constexpr uint16_t kDnsTypeSrv = 33;
 constexpr uint16_t kDnsClassIn = 1;
+constexpr uint16_t kDnsClassUnicastResponse = 0x8000;
 constexpr const char* kAirPlayService = "_airplay._tcp.local";
 constexpr const char* kRaopService = "_raop._tcp.local";
 
@@ -84,8 +91,8 @@ std::vector<uint8_t> make_ptr_query(const char* service) {
     append_dns_name(packet, service);
     packet.push_back(0);
     packet.push_back(static_cast<uint8_t>(kDnsTypePtr));
-    packet.push_back(0);
-    packet.push_back(static_cast<uint8_t>(kDnsClassIn));
+    packet.push_back(static_cast<uint8_t>((kDnsClassIn | kDnsClassUnicastResponse) >> 8));
+    packet.push_back(static_cast<uint8_t>((kDnsClassIn | kDnsClassUnicastResponse) & 0xFF));
     return packet;
 }
 
@@ -136,6 +143,7 @@ struct DiscoveredService {
     std::string full_name;
     std::string instance_name;
     std::string target_host;
+    std::string target_address;
     uint16_t port = 0;
     std::map<std::string, std::string> txt;
 };
@@ -158,7 +166,46 @@ std::map<std::string, std::string> parse_txt(const std::vector<uint8_t>& packet,
     return result;
 }
 
-void parse_response(const std::vector<uint8_t>& packet, std::map<std::string, DiscoveredService>& services) {
+std::string ipv4_address_from_rdata(const std::vector<uint8_t>& packet, size_t offset, size_t length) {
+    if (length != 4 || offset + length > packet.size()) {
+        return {};
+    }
+
+    char text[INET_ADDRSTRLEN] = {};
+    in_addr address = {};
+    std::memcpy(&address, packet.data() + offset, sizeof(address));
+    return inet_ntop(AF_INET, &address, text, sizeof(text)) == nullptr ? std::string{} : std::string{text};
+}
+
+std::string ipv6_address_from_rdata(const std::vector<uint8_t>& packet, size_t offset, size_t length) {
+    if (length != 16 || offset + length > packet.size()) {
+        return {};
+    }
+
+    char text[INET6_ADDRSTRLEN] = {};
+    in6_addr address = {};
+    std::memcpy(&address, packet.data() + offset, sizeof(address));
+    return inet_ntop(AF_INET6, &address, text, sizeof(text)) == nullptr ? std::string{} : std::string{text};
+}
+
+void apply_host_addresses(
+    std::map<std::string, DiscoveredService>& services,
+    const std::map<std::string, std::string>& host_addresses) {
+    for (auto& [_, service] : services) {
+        if (service.target_host.empty()) {
+            continue;
+        }
+        const auto it = host_addresses.find(lower_ascii(service.target_host));
+        if (it != host_addresses.end()) {
+            service.target_address = it->second;
+        }
+    }
+}
+
+void parse_response(
+    const std::vector<uint8_t>& packet,
+    std::map<std::string, DiscoveredService>& services,
+    std::map<std::string, std::string>& host_addresses) {
     if (packet.size() < 12) return;
 
     const auto qdcount = read_u16(packet, 4);
@@ -213,10 +260,22 @@ void parse_response(const std::vector<uint8_t>& packet, std::map<std::string, Di
             service.full_name = name;
             auto txt = parse_txt(packet, rdata_offset, rdlength);
             service.txt.insert(txt.begin(), txt.end());
+        } else if (type == kDnsTypeA) {
+            auto address = ipv4_address_from_rdata(packet, rdata_offset, rdlength);
+            if (!address.empty()) {
+                host_addresses[lower_ascii(name)] = std::move(address);
+            }
+        } else if (type == kDnsTypeAaaa) {
+            auto address = ipv6_address_from_rdata(packet, rdata_offset, rdlength);
+            if (!address.empty() && host_addresses.find(lower_ascii(name)) == host_addresses.end()) {
+                host_addresses[lower_ascii(name)] = std::move(address);
+            }
         }
 
         offset += rdlength;
     }
+
+    apply_host_addresses(services, host_addresses);
 }
 
 std::string txt_value(const std::map<std::string, std::string>& txt, const char* key) {
@@ -227,6 +286,59 @@ std::string txt_value(const std::map<std::string, std::string>& txt, const char*
 bool truthy_txt(const std::map<std::string, std::string>& txt, const char* key) {
     const auto value = lower_ascii(txt_value(txt, key));
     return value == "1" || value == "true" || value == "yes";
+}
+
+bool csv_number_contains(const std::string& text, unsigned expected) {
+    size_t cursor = 0;
+    while (cursor <= text.size()) {
+        const auto comma = text.find(',', cursor);
+        auto token = text.substr(cursor, comma == std::string::npos ? std::string::npos : comma - cursor);
+        token.erase(std::remove_if(token.begin(), token.end(), [](unsigned char c) {
+            return std::isspace(c) != 0;
+        }), token.end());
+
+        if (!token.empty()) {
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(token.c_str(), &end, 0);
+            if (end != token.c_str() && *end == '\0' && parsed == expected) {
+                return true;
+            }
+        }
+
+        if (comma == std::string::npos) {
+            break;
+        }
+        cursor = comma + 1;
+    }
+    return false;
+}
+
+bool supports_unencrypted_audio(const std::map<std::string, std::string>& txt) {
+    const auto encryption_types = txt_value(txt, "et");
+    return encryption_types.empty() || csv_number_contains(encryption_types, 0);
+}
+
+bool txt_number_missing_or_contains(const std::map<std::string, std::string>& txt, const char* key, unsigned expected) {
+    const auto value = txt_value(txt, key);
+    return value.empty() || csv_number_contains(value, expected);
+}
+
+bool supports_mvp_l16_audio(const std::map<std::string, std::string>& txt) {
+    return txt_number_missing_or_contains(txt, "cn", 0) &&
+           txt_number_missing_or_contains(txt, "ss", 16) &&
+           txt_number_missing_or_contains(txt, "ch", 2) &&
+           txt_number_missing_or_contains(txt, "sr", 44100);
+}
+
+bool supports_airplay2_audio(const std::map<std::string, std::string>& txt) {
+    const auto encryption_types = txt_value(txt, "et");
+    const bool has_airplay2_encryption = csv_number_contains(encryption_types, 4) ||
+                                         csv_number_contains(encryption_types, 5);
+    const bool has_airplay_features = !txt_value(txt, "features").empty() ||
+                                      !txt_value(txt, "ft").empty() ||
+                                      !txt_value(txt, "vv").empty() ||
+                                      !txt_value(txt, "protovers").empty();
+    return has_airplay2_encryption || has_airplay_features;
 }
 
 std::string device_id_from(const DiscoveredService& service) {
@@ -242,12 +354,27 @@ OutputDevice to_output_device(const DiscoveredService& service) {
     device.name = service.instance_name.empty() ? service.full_name : service.instance_name;
     device.type = OutputType::AirPlay;
     device.has_password = truthy_txt(service.txt, "pw");
-    device.requires_auth = device.has_password || truthy_txt(service.txt, "requiresauth");
-    device.needs_auth_key = truthy_txt(service.txt, "sf");
+    const bool unencrypted_audio = supports_unencrypted_audio(service.txt);
+    device.supports_legacy_l16 = unencrypted_audio && supports_mvp_l16_audio(service.txt);
+    device.supports_airplay2 = supports_airplay2_audio(service.txt);
+    device.requires_encrypted_stream = !unencrypted_audio || device.supports_airplay2;
+    device.requires_auth = device.has_password ||
+                           truthy_txt(service.txt, "da") ||
+                           truthy_txt(service.txt, "requiresauth") ||
+                           device.requires_encrypted_stream;
+    device.needs_auth_key = device.requires_encrypted_stream;
     device.volume = 50;
-    device.format = "airplay";
-    device.supported_formats = {"airplay"};
-    device.endpoint_host = service.target_host;
+    if (device.supports_airplay2) {
+        device.format = "airplay2";
+        device.supported_formats = {"airplay2"};
+    } else if (device.supports_legacy_l16) {
+        device.format = "airplay-legacy-l16";
+        device.supported_formats = {"airplay-legacy-l16"};
+    } else {
+        device.format = device.requires_auth ? "airplay-auth-required" : "airplay-unsupported-format";
+        device.supported_formats = {device.format};
+    }
+    device.endpoint_host = service.target_address.empty() ? service.target_host : service.target_address;
     device.endpoint_port = service.port;
     device.txt_records = service.txt;
     return device;
@@ -307,6 +434,7 @@ std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
     }
 
     std::map<std::string, DiscoveredService> services;
+    std::map<std::string, std::string> host_addresses;
     const auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
         std::array<uint8_t, 9000> buffer = {};
@@ -322,7 +450,7 @@ std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
         if (received == SOCKET_ERROR) break;
         if (received > 0) {
             try {
-                parse_response(std::vector<uint8_t>(buffer.begin(), buffer.begin() + received), services);
+                parse_response(std::vector<uint8_t>(buffer.begin(), buffer.begin() + received), services, host_addresses);
             } catch (const std::exception&) {
             }
         }

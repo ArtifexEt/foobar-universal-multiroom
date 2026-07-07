@@ -25,6 +25,9 @@ struct OutputDevice {
     bool has_password = false;
     bool requires_auth = false;
     bool needs_auth_key = false;
+    bool supports_airplay2 = false;
+    bool supports_legacy_l16 = false;
+    bool requires_encrypted_stream = false;
     int volume = 0;
     int offset_ms = 0;
     int measured_latency_ms = 0;

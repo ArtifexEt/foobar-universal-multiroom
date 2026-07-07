@@ -4,9 +4,10 @@
 DECLARE_COMPONENT_VERSION(
     "Universal Multiroom Bridge",
     MULTIROOM_COMPONENT_VERSION,
-    "Native multiroom transport component for foobar2000. "
-    "This build contains native AirPlay discovery, a foobar UI speaker selector, "
-    "the transport-neutral core, and the sync scheduler.\n\n"
+    "Native AirPlay 2 multiroom transport component for foobar2000. "
+    "This build contains AirPlay 2 discovery classification, a foobar UI speaker selector, "
+    "a transport-neutral core, the sync scheduler, and transient encrypted AirPlay 2 ALAC streaming. "
+    "PIN pairing and persisted credentials are still in progress.\n\n"
     "Repository: https://github.com/ArtifexEt/foobar-universal-multiroom");
 
 VALIDATE_COMPONENT_FILENAME("foo_out_multiroom_bridge.dll");

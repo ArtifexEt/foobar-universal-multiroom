@@ -19,18 +19,21 @@ Acceptance:
 
 - foobar UI lists AirPlay outputs discovered on the network.
 - selecting speakers updates the plugin's active output set.
-- volume/offset changes are persisted and reflected in UI state.
+- volume/offset changes are persisted and reflected in UI state; active
+  AirPlay volume changes are also sent over RTSP where a session is open.
 
 ## Phase 2 - Single Speaker Playback
 
 - Convert foobar audio chunks to transport format.
-- Open one AirPlay session.
+- Complete transient HAP pair-setup for one AirPlay 2 speaker.
+- Establish encrypted AirPlay 2 session/stream setup.
+- Send encrypted realtime ALAC RTP packets.
 - Start/stop the stream with foobar playback.
 - Handle pause/seek/flush cleanly.
 
 Acceptance:
 
-- foobar playback is audible through one selected AirPlay output.
+- foobar playback is audible through one selected AirPlay 2 output.
 - pause, seek, and stop do not leave stale sessions behind.
 
 ## Phase 3 - Multi Speaker Sync
@@ -42,7 +45,7 @@ Acceptance:
 
 Acceptance:
 
-- foobar playback is audible through multiple selected AirPlay outputs.
+- foobar playback is audible through multiple selected AirPlay 2 outputs.
 - selected remote speakers stay synchronized under the plugin's clocking.
 - switching selected speakers during playback does not require restarting foobar.
 
@@ -50,7 +53,9 @@ Acceptance:
 
 - Add presets.
 - Add status/error messages.
-- Add auth warning and optional PIN flow.
+- Add auth warning, optional PIN flow, and persisted pair-verify credentials.
+- Service the encrypted AirPlay 2 event channel for remote pause/next/previous
+  and device-side volume updates.
 - Add metadata forwarding.
 - Add output format preference where speakers expose multiple formats.
 

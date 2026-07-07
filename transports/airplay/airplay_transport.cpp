@@ -6,6 +6,9 @@
 
 namespace multiroom::airplay {
 
+AirPlayTransport::AirPlayTransport(std::shared_ptr<AirPlayControlClient> control_client)
+    : sessions_(std::move(control_client)) {}
+
 void AirPlayTransport::start_discovery() {
     discovery_.start();
     sync_discovered_outputs();
@@ -28,12 +31,16 @@ std::vector<OutputDevice> AirPlayTransport::list_outputs() {
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
     sync_discovered_outputs();
     registry_.set_enabled_outputs(ids);
-    sessions_.open_for_outputs(registry_.list());
+    sessions_.prepare_outputs(registry_.list());
     sessions_.close_missing_outputs(registry_.list());
+    if (stream_open_) {
+        sessions_.open_for_outputs(registry_.list(), stream_format_);
+    }
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
     registry_.set_output_volume(id, volume);
+    sessions_.set_volume(id, volume);
 }
 
 void AirPlayTransport::set_output_offset_ms(const std::string& id, int offset_ms) {
@@ -46,9 +53,9 @@ void AirPlayTransport::open_stream(const PcmFormat& format) {
     }
 
     stream_format_ = format;
-    stream_open_ = true;
     sessions_.flush();
-    sessions_.open_for_outputs(registry_.list());
+    sessions_.open_for_outputs(registry_.list(), stream_format_);
+    stream_open_ = true;
 }
 
 void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) {
@@ -63,7 +70,7 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         registry_.list(),
         {stream_timestamp, bytes, stream_format_.sample_rate, 250});
     for (const auto& packet : packets) {
-        sessions_.enqueue(packet);
+        sessions_.enqueue(packet, frames, bytes);
     }
 }
 

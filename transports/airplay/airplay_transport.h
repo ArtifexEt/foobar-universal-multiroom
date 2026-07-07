@@ -7,12 +7,15 @@
 #include "core/packet_scheduler.h"
 #include "transport.h"
 
+#include <memory>
 #include <vector>
 
 namespace multiroom::airplay {
 
 class AirPlayTransport final : public Transport {
 public:
+    explicit AirPlayTransport(std::shared_ptr<AirPlayControlClient> control_client = make_airplay_rtsp_control_client());
+
     void start_discovery() override;
     void stop_discovery() override;
     std::vector<OutputDevice> list_outputs() override;

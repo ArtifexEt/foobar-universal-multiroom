@@ -3,14 +3,15 @@
 Foobar Universal Multiroom is a standalone foobar2000 component for playing
 foobar audio on selected network speakers with synchronized multiroom playback.
 
-The first transport target is native AirPlay. The plugin owns discovery, speaker
-selection, stream scheduling, and synchronization state itself. The transport
-boundary stays generic so HEOS, Music Assistant, Chromecast groups, Snapcast, or
-other renderers can be added later without changing the foobar UI.
+The first transport target is native AirPlay 2. The plugin owns discovery,
+speaker selection, stream scheduling, authentication/session state, and
+synchronization itself. The transport boundary stays generic so HEOS, Music
+Assistant, Chromecast groups, Snapcast, or other renderers can be added later
+without changing the foobar UI.
 
 ## Goals
 
-- Play the same foobar2000 music at the same time on selected AirPlay speakers.
+- Play the same foobar2000 music at the same time on selected AirPlay 2 speakers.
 - Keep remote speakers synchronized with a project-owned playback clock and
   packet scheduler.
 - Put speaker selection in the foobar UI, not only in Preferences.
@@ -26,12 +27,31 @@ other renderers can be added later without changing the foobar UI.
 - `foo_out_multiroom_bridge` builds as a foobar2000 component in GitHub Actions.
 - The foobar UI includes a compact speaker selector element.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
-  speakers as a checkbox menu.
+  speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
+  volume sliders.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks.
 - The transport-neutral core includes output state, packet scheduling, stream
   clocking, and the AirPlay transport boundary.
-- AirPlay playback/session negotiation is the next large implementation area.
+- AirPlay discovery now classifies AirPlay 2, legacy unencrypted L16, auth, and
+  unsupported endpoints separately.
+- AirPlay 2 now uses the Apache-2.0 `airplay2-sender-cpp` crypto/wire-format
+  core as a pinned build dependency, without vendoring it into this repository.
+- The first real AirPlay 2 sender path performs transient HAP pair-setup,
+  switches the RTSP control channel to ChaCha20-Poly1305 framing, negotiates
+  binary-plist session/stream `SETUP`, and sends encrypted realtime ALAC RTP.
+- The legacy RTSP/TCP probe client has `OPTIONS`,
+  `ANNOUNCE`, `SETUP`, `RECORD`, `FLUSH`, and `TEARDOWN` session setup against
+  discovered endpoints.
+- The RTP/L16 sender path remains only as a legacy/probe path, not the MVP.
+- Foobar registers a high-latency `Universal Multiroom Bridge` output device
+  that feeds selected AirPlay 2 sessions from the normal foobar output
+  pipeline.
+- Per-speaker UI volume changes are sent to active AirPlay sessions with native
+  RTSP `SET_PARAMETER` volume updates.
+- Still missing before daily use: on-screen PIN pairing UI, persisted
+  credentials/pair-verify reconnects, full encrypted event-channel handling,
+  real-device validation, and timing hardening.
 
 ## TODO
 

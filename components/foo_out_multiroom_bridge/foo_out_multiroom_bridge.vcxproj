@@ -41,6 +41,8 @@
     <TargetName>foo_out_multiroom_bridge</TargetName>
     <OutDir>$(MSBuildProjectDirectory)\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\</IntDir>
+    <AirPlay2SenderRoot Condition="'$(AirPlay2SenderRoot)'==''">$(MSBuildProjectDirectory)\..\..\..\airplay2-sender-cpp</AirPlay2SenderRoot>
+    <AirPlay2SenderBuildRoot Condition="'$(AirPlay2SenderBuildRoot)'==''">$(MSBuildProjectDirectory)\..\..\..\airplay2-sender-cpp-build</AirPlay2SenderBuildRoot>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -50,9 +52,9 @@
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <TreatSpecificWarningsAsErrors>4715</TreatSpecificWarningsAsErrors>
-      <AdditionalIncludeDirectories>.;..;../..</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.;..;../..;$(AirPlay2SenderRoot)\src;$(AirPlay2SenderRoot)\third_party\ed25519\src</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;_WINDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/permissive- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -60,7 +62,8 @@
       <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(AirPlay2SenderBuildRoot)\$(Configuration);$(AirPlay2SenderBuildRoot)\_deps\mbedtls-build\library\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>airplay_crypto.lib;mbedcrypto.lib;ed25519.lib;../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -73,15 +76,16 @@
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <TreatSpecificWarningsAsErrors>4715</TreatSpecificWarningsAsErrors>
-      <AdditionalIncludeDirectories>.;..;../..</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.;..;../..;$(AirPlay2SenderRoot)\src;$(AirPlay2SenderRoot)\third_party\ed25519\src</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;_WINDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/permissive- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(AirPlay2SenderBuildRoot)\$(Configuration);$(AirPlay2SenderBuildRoot)\_deps\mbedtls-build\library\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>airplay_crypto.lib;mbedcrypto.lib;ed25519.lib;../shared/shared-$(Platform).lib;ole32.lib;user32.lib;gdi32.lib;comctl32.lib;shell32.lib;winmm.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -90,6 +94,18 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\transports\airplay\airplay_discovery.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\transports\airplay\airplay2_external_crypto.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\transports\airplay\airplay2_session.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\transports\airplay\airplay_rtsp.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -115,6 +131,7 @@
     </ClCompile>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="multiroom_component_state.cpp" />
+    <ClCompile Include="multiroom_output.cpp" />
     <ClCompile Include="preferences.cpp" />
     <ClCompile Include="speaker_selector_element.cpp" />
   </ItemGroup>
@@ -123,6 +140,9 @@
     <ClInclude Include="multiroom_component_state.h" />
     <ClInclude Include="preferences_resource.h" />
     <ClInclude Include="stdafx.h" />
+    <ClInclude Include="..\..\transports\airplay\airplay2_external_crypto.h" />
+    <ClInclude Include="..\..\transports\airplay\airplay2_session.h" />
+    <ClInclude Include="..\..\transports\airplay\airplay_rtsp.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="preferences.rc" />

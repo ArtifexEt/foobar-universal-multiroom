@@ -2,12 +2,24 @@ cmake_minimum_required(VERSION 3.24)
 
 project(FoobarUniversalMultiroom LANGUAGES CXX)
 
+include(FetchContent)
+
+set(AIRPLAY2_SENDER_CPP_TAG "8c4034263f1c265d25b3cfb88a090624760ad22a" CACHE STRING "Pinned airplay2-sender-cpp revision")
+FetchContent_Declare(airplay2_sender_cpp
+    GIT_REPOSITORY https://github.com/akustikrausch/airplay2-sender-cpp.git
+    GIT_TAG        ${AIRPLAY2_SENDER_CPP_TAG}
+)
+FetchContent_MakeAvailable(airplay2_sender_cpp)
+
 add_library(MultiroomCore
     components/foo_out_multiroom_bridge/core/multiroom_engine.cpp
     components/foo_out_multiroom_bridge/core/output_registry.cpp
     components/foo_out_multiroom_bridge/core/packet_scheduler.cpp
     components/foo_out_multiroom_bridge/core/sync_clock.cpp
     transports/airplay/airplay_discovery.cpp
+    transports/airplay/airplay2_external_crypto.cpp
+    transports/airplay/airplay2_session.cpp
+    transports/airplay/airplay_rtsp.cpp
     transports/airplay/airplay_session.cpp
     transports/airplay/airplay_transport.cpp
 )
@@ -33,6 +45,8 @@ endif()
 if(WIN32)
     target_link_libraries(MultiroomCore PUBLIC ws2_32)
 endif()
+
+target_link_libraries(MultiroomCore PUBLIC airplay_crypto)
 
 enable_testing()
 

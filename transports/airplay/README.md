@@ -1,26 +1,31 @@
 # AirPlay Transport
 
-First native transport target for `foo_out_multiroom_bridge`.
+First native AirPlay 2 transport target for `foo_out_multiroom_bridge`.
 
 The AirPlay implementation should be built as part of this project, with a clean
 internal boundary so the foobar component does not know protocol details.
 
 ## Responsibilities
 
-- discover AirPlay targets with mDNS/Bonjour,
+- discover AirPlay 2 targets with mDNS/Bonjour,
 - model speakers and groups,
 - perform pairing/auth where required,
 - negotiate stream format,
-- send audio packets with timestamps,
+- encrypt and send audio packets with timestamps,
 - maintain a shared playback clock,
 - compensate per-speaker latency and configured offsets,
 - expose device status to the foobar UI.
 
 ## MVP Scope
 
-Start with stereo PCM/ALAC to AirPlay-capable speakers and synchronized playback
-across selected outputs. AirPlay 2 group behavior can be layered once discovery,
-clocking, and basic remote playback are stable.
+Start with one AirPlay 2 speaker using transient HAP pair-setup, encrypted
+control framing, binary-plist `SETUP`, and encrypted realtime ALAC RTP. Legacy
+unencrypted PCM/L16 is a probe/fallback path only and does not satisfy the MVP.
+
+The project uses `akustikrausch/airplay2-sender-cpp` as a pinned build-time
+dependency for the AirPlay 2 crypto and wire-format core. The foobar component
+does not run or depend on OwnTone, Music Assistant, or any external multiroom
+server.
 
 ## Boundary
 
@@ -35,4 +40,3 @@ plugin:
 - volume,
 - measured latency,
 - configured offset.
-
