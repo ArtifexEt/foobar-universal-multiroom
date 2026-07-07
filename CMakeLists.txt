@@ -4,6 +4,7 @@ project(FoobarUniversalMultiroom LANGUAGES CXX)
 
 add_library(MultiroomCore
     components/foo_out_multiroom_bridge/core/output_registry.cpp
+    components/foo_out_multiroom_bridge/core/packet_scheduler.cpp
     components/foo_out_multiroom_bridge/core/sync_clock.cpp
     transports/airplay/airplay_transport.cpp
 )

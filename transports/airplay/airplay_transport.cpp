@@ -47,16 +47,11 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         throw std::invalid_argument("Frame buffer cannot be null when bytes are present.");
     }
 
-    for (const auto& output : registry_.list()) {
-        if (!output.selected) {
-            continue;
-        }
-
-        queued_packets_.push_back({
-            output.id,
-            stream_timestamp,
-            bytes,
-        });
+    const auto packets = scheduler_.schedule(
+        registry_.list(),
+        {stream_timestamp, bytes, stream_format_.sample_rate, 250});
+    for (const auto& packet : packets) {
+        queued_packets_.push_back(packet);
     }
 }
 
@@ -82,7 +77,7 @@ bool AirPlayTransport::stream_open() const {
     return stream_open_;
 }
 
-const std::vector<QueuedPacket>& AirPlayTransport::queued_packets() const {
+const std::vector<ScheduledPacket>& AirPlayTransport::queued_packets() const {
     return queued_packets_;
 }
 

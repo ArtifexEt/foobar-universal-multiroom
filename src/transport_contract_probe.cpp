@@ -71,6 +71,13 @@ int main() {
 
     std::cout << "Discovered outputs: " << transport.list_outputs().size() << '\n';
     std::cout << "Queued packets: " << transport.queued_packets().size() << '\n';
+    for (const auto& packet : transport.queued_packets()) {
+        std::cout << "Packet " << packet.output_id
+                  << " source=" << packet.stream_timestamp
+                  << " presentation=" << packet.presentation_timestamp
+                  << " earliest_send=" << packet.earliest_send_timestamp
+                  << '\n';
+    }
     std::cout << "Next stream frame: " << clock.current_frame() << '\n';
 
     return 0;

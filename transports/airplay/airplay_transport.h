@@ -1,20 +1,12 @@
 #pragma once
 
 #include "../../components/foo_out_multiroom_bridge/core/output_registry.h"
-#include "../../components/foo_out_multiroom_bridge/core/sync_clock.h"
+#include "../../components/foo_out_multiroom_bridge/core/packet_scheduler.h"
 #include "../../components/foo_out_multiroom_bridge/transport.h"
 
-#include <cstddef>
-#include <cstdint>
 #include <vector>
 
 namespace multiroom::airplay {
-
-struct QueuedPacket {
-    std::string output_id;
-    uint64_t stream_timestamp = 0;
-    size_t bytes = 0;
-};
 
 class AirPlayTransport final : public Transport {
 public:
@@ -32,15 +24,15 @@ public:
     void add_discovered_output(OutputDevice device);
     bool discovery_active() const;
     bool stream_open() const;
-    const std::vector<QueuedPacket>& queued_packets() const;
+    const std::vector<ScheduledPacket>& queued_packets() const;
 
 private:
     OutputRegistry registry_;
+    PacketScheduler scheduler_;
     PcmFormat stream_format_;
     bool discovery_active_ = false;
     bool stream_open_ = false;
-    std::vector<QueuedPacket> queued_packets_;
+    std::vector<ScheduledPacket> queued_packets_;
 };
 
 }  // namespace multiroom::airplay
-
