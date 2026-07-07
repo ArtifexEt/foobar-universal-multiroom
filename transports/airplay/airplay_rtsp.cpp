@@ -1,5 +1,13 @@
 #include "airplay_rtsp.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "airplay2_external_crypto.h"
 
 #include <airplay_crypto.h>
@@ -1300,6 +1308,8 @@ private:
     bool ap2_first_audio_ = true;
     std::string remote_host_;
     std::string stream_uri_;
+    std::string dacp_id_;
+    std::string active_remote_;
     AirPlay2Bytes ap2_audio_key_;
     std::unique_ptr<AirPlay2FrameCipher> control_cipher_;
     std::unique_ptr<AirPlay2FrameCipher> event_cipher_;
