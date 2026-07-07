@@ -37,7 +37,7 @@ void append_le16(std::vector<uint8_t>& out, int16_t sample) {
 
 }  // namespace
 
-class MultiroomOutput final : public output_impl {
+class MultiroomOutput : public output_impl {
 public:
     MultiroomOutput(const GUID& device, double buffer_length, bool dither, t_uint32 bit_depth)
         : device_(device), buffer_length_(buffer_length), dither_(dither), bit_depth_(bit_depth) {
