@@ -419,6 +419,14 @@ std::string narrow_utf16(const wchar_t* text) {
     return result;
 }
 
+std::string narrow_dns_string(const wchar_t* text) {
+    return narrow_utf16(text);
+}
+
+std::string narrow_dns_string(const char* text) {
+    return text == nullptr ? std::string{} : std::string{text};
+}
+
 std::wstring widen_ascii(const char* text) {
     std::wstring result;
     if (text == nullptr) return result;
@@ -426,6 +434,23 @@ std::wstring widen_ascii(const char* text) {
         result.push_back(static_cast<wchar_t>(*text++));
     }
     return result;
+}
+
+std::wstring dns_name_to_wstring(const wchar_t* text) {
+    return text == nullptr ? std::wstring{} : std::wstring{text};
+}
+
+std::wstring dns_name_to_wstring(const char* text) {
+    return widen_ascii(text);
+}
+
+auto dns_query_name(const std::wstring& wide, const std::string& narrow) {
+#ifdef UNICODE
+    return const_cast<PWSTR>(wide.c_str());
+#else
+    static_cast<void>(wide);
+    return const_cast<PSTR>(narrow.c_str());
+#endif
 }
 
 std::string ipv4_address_from_dns_service(const IP4_ADDRESS* address) {
@@ -462,7 +487,7 @@ void WINAPI dns_service_browse_callback(DWORD status, PVOID query_context, PDNS_
         } else if (status == ERROR_SUCCESS) {
             for (auto* record = record_list; record != nullptr; record = record->pNext) {
                 if (record->wType == DNS_TYPE_PTR && record->Data.PTR.pNameHost != nullptr) {
-                    context->service_names.insert(record->Data.PTR.pNameHost);
+                    context->service_names.insert(dns_name_to_wstring(record->Data.PTR.pNameHost));
                 }
             }
         }
@@ -482,15 +507,15 @@ void WINAPI dns_service_resolve_callback(DWORD status, PVOID query_context, PDNS
         std::lock_guard lock(context->mutex);
         if (status == ERROR_SUCCESS && instance != nullptr) {
             DiscoveredService service;
-            service.full_name = trim_trailing_dot(narrow_utf16(instance->pszInstanceName));
+            service.full_name = trim_trailing_dot(narrow_dns_string(instance->pszInstanceName));
             service.instance_name = service_instance_name(service.full_name, service.full_name.find(kAirPlayService) != std::string::npos ? kAirPlayService : kRaopService);
-            service.target_host = trim_trailing_dot(narrow_utf16(instance->pszHostName));
+            service.target_host = trim_trailing_dot(narrow_dns_string(instance->pszHostName));
             service.target_address = ipv4_address_from_dns_service(instance->ip4Address);
             service.port = instance->wPort;
 
             for (DWORD index = 0; index < instance->dwPropertyCount; ++index) {
-                const auto key = lower_ascii(narrow_utf16(instance->keys[index]));
-                const auto value = narrow_utf16(instance->values[index]);
+                const auto key = lower_ascii(narrow_dns_string(instance->keys[index]));
+                const auto value = narrow_dns_string(instance->values[index]);
                 if (!key.empty()) service.txt[key] = value;
             }
 
@@ -509,9 +534,10 @@ std::optional<DiscoveredService> resolve_windows_dns_sd_service(const std::wstri
     ResolveContext context;
     DNS_SERVICE_CANCEL cancel = {};
     DNS_SERVICE_RESOLVE_REQUEST request = {};
+    const auto service_name_narrow = narrow_utf16(service_name.c_str());
     request.Version = DNS_QUERY_REQUEST_VERSION1;
     request.InterfaceIndex = 0;
-    request.QueryName = const_cast<PWSTR>(service_name.c_str());
+    request.QueryName = dns_query_name(service_name, service_name_narrow);
     request.pResolveCompletionCallback = dns_service_resolve_callback;
     request.pQueryContext = &context;
 
@@ -542,10 +568,11 @@ std::vector<OutputDevice> browse_windows_dns_sd(std::chrono::milliseconds timeou
         BrowseContext context;
         DNS_SERVICE_CANCEL cancel = {};
         DNS_SERVICE_BROWSE_REQUEST request = {};
-        const auto query = widen_ascii(service_type);
+        const auto query_wide = widen_ascii(service_type);
+        const std::string query_narrow = service_type;
         request.Version = DNS_QUERY_REQUEST_VERSION1;
         request.InterfaceIndex = 0;
-        request.QueryName = query.c_str();
+        request.QueryName = dns_query_name(query_wide, query_narrow);
         request.pBrowseCallback = dns_service_browse_callback;
         request.pQueryContext = &context;
 
