@@ -31,7 +31,7 @@ void AirPlaySessionManager::close_missing_outputs(const std::vector<OutputDevice
     }
 
     for (auto& [id, session] : sessions_) {
-        if (!selected.contains(id)) {
+        if (selected.find(id) == selected.end()) {
             session.open = false;
             session.queued_packets.clear();
         }
@@ -90,4 +90,3 @@ std::vector<ScheduledPacket> AirPlaySessionManager::queued_packets() const {
 }
 
 }  // namespace multiroom::airplay
-
