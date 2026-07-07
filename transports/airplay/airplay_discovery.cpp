@@ -444,15 +444,6 @@ std::wstring dns_name_to_wstring(const char* text) {
     return widen_ascii(text);
 }
 
-auto dns_query_name(const std::wstring& wide, const std::string& narrow) {
-#ifdef UNICODE
-    return const_cast<PWSTR>(wide.c_str());
-#else
-    static_cast<void>(wide);
-    return const_cast<PSTR>(narrow.c_str());
-#endif
-}
-
 std::string ipv4_address_from_dns_service(const IP4_ADDRESS* address) {
     if (address == nullptr) return {};
 
@@ -534,10 +525,9 @@ std::optional<DiscoveredService> resolve_windows_dns_sd_service(const std::wstri
     ResolveContext context;
     DNS_SERVICE_CANCEL cancel = {};
     DNS_SERVICE_RESOLVE_REQUEST request = {};
-    const auto service_name_narrow = narrow_utf16(service_name.c_str());
     request.Version = DNS_QUERY_REQUEST_VERSION1;
     request.InterfaceIndex = 0;
-    request.QueryName = dns_query_name(service_name, service_name_narrow);
+    request.QueryName = const_cast<PWSTR>(service_name.c_str());
     request.pResolveCompletionCallback = dns_service_resolve_callback;
     request.pQueryContext = &context;
 
@@ -569,10 +559,9 @@ std::vector<OutputDevice> browse_windows_dns_sd(std::chrono::milliseconds timeou
         DNS_SERVICE_CANCEL cancel = {};
         DNS_SERVICE_BROWSE_REQUEST request = {};
         const auto query_wide = widen_ascii(service_type);
-        const std::string query_narrow = service_type;
         request.Version = DNS_QUERY_REQUEST_VERSION1;
         request.InterfaceIndex = 0;
-        request.QueryName = dns_query_name(query_wide, query_narrow);
+        request.QueryName = query_wide.c_str();
         request.pBrowseCallback = dns_service_browse_callback;
         request.pQueryContext = &context;
 
