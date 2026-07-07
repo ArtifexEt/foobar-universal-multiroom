@@ -6,19 +6,26 @@
 namespace multiroom::airplay {
 
 void AirPlayTransport::start_discovery() {
+    discovery_.start();
+    sync_discovered_outputs();
     discovery_active_ = true;
 }
 
 void AirPlayTransport::stop_discovery() {
+    discovery_.stop();
     discovery_active_ = false;
 }
 
 std::vector<OutputDevice> AirPlayTransport::list_outputs() {
+    sync_discovered_outputs();
     return registry_.list();
 }
 
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
+    sync_discovered_outputs();
     registry_.set_enabled_outputs(ids);
+    sessions_.open_for_outputs(registry_.list());
+    sessions_.close_missing_outputs(registry_.list());
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
@@ -36,7 +43,8 @@ void AirPlayTransport::open_stream(const PcmFormat& format) {
 
     stream_format_ = format;
     stream_open_ = true;
-    queued_packets_.clear();
+    sessions_.flush();
+    sessions_.open_for_outputs(registry_.list());
 }
 
 void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) {
@@ -51,22 +59,27 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         registry_.list(),
         {stream_timestamp, bytes, stream_format_.sample_rate, 250});
     for (const auto& packet : packets) {
-        queued_packets_.push_back(packet);
+        sessions_.enqueue(packet);
     }
 }
 
 void AirPlayTransport::flush() {
-    queued_packets_.clear();
+    sessions_.flush();
 }
 
 void AirPlayTransport::stop() {
-    flush();
+    sessions_.stop();
     stream_open_ = false;
 }
 
 void AirPlayTransport::add_discovered_output(OutputDevice device) {
     device.type = OutputType::AirPlay;
-    registry_.upsert(std::move(device));
+    discovery_.upsert(std::move(device));
+    sync_discovered_outputs();
+}
+
+void AirPlayTransport::set_measured_latency_ms(const std::string& id, int measured_latency_ms) {
+    registry_.set_measured_latency_ms(id, measured_latency_ms);
 }
 
 bool AirPlayTransport::discovery_active() const {
@@ -77,8 +90,26 @@ bool AirPlayTransport::stream_open() const {
     return stream_open_;
 }
 
-const std::vector<ScheduledPacket>& AirPlayTransport::queued_packets() const {
-    return queued_packets_;
+std::vector<ScheduledPacket> AirPlayTransport::queued_packets() const {
+    return sessions_.queued_packets();
+}
+
+std::vector<AirPlaySessionState> AirPlayTransport::sessions() const {
+    return sessions_.sessions();
+}
+
+void AirPlayTransport::sync_discovered_outputs() {
+    for (auto device : discovery_.list()) {
+        const auto existing = registry_.find(device.id);
+        if (existing) {
+            device.selected = existing->selected;
+            device.volume = existing->volume;
+            device.offset_ms = existing->offset_ms;
+            device.measured_latency_ms = existing->measured_latency_ms;
+        }
+
+        registry_.upsert(std::move(device));
+    }
 }
 
 }  // namespace multiroom::airplay

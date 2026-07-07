@@ -1,5 +1,8 @@
 #pragma once
 
+#include "airplay_discovery.h"
+#include "airplay_session.h"
+
 #include "../../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../../components/foo_out_multiroom_bridge/core/packet_scheduler.h"
 #include "../../components/foo_out_multiroom_bridge/transport.h"
@@ -22,17 +25,22 @@ public:
     void stop() override;
 
     void add_discovered_output(OutputDevice device);
+    void set_measured_latency_ms(const std::string& id, int measured_latency_ms);
     bool discovery_active() const;
     bool stream_open() const;
-    const std::vector<ScheduledPacket>& queued_packets() const;
+    std::vector<ScheduledPacket> queued_packets() const;
+    std::vector<AirPlaySessionState> sessions() const;
 
 private:
+    void sync_discovered_outputs();
+
+    AirPlayDiscovery discovery_;
     OutputRegistry registry_;
+    AirPlaySessionManager sessions_;
     PacketScheduler scheduler_;
     PcmFormat stream_format_;
     bool discovery_active_ = false;
     bool stream_open_ = false;
-    std::vector<ScheduledPacket> queued_packets_;
 };
 
 }  // namespace multiroom::airplay

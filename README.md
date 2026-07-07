@@ -66,6 +66,7 @@ probe while the real foobar SDK project is added.
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 The real component build should download the foobar2000 SDK in CI, copy
