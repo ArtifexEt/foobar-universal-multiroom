@@ -5,13 +5,16 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
 #include <stdexcept>
+#include <set>
 #include <utility>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
+#include <windns.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -38,8 +41,15 @@ std::string lower_ascii(std::string value) {
     return value;
 }
 
+std::string trim_trailing_dot(std::string value) {
+    while (!value.empty() && value.back() == '.') {
+        value.pop_back();
+    }
+    return value;
+}
+
 bool ends_with_service(const std::string& name, const char* service) {
-    const auto lowered_name = lower_ascii(name);
+    const auto lowered_name = lower_ascii(trim_trailing_dot(name));
     const auto lowered_service = lower_ascii(service);
     if (lowered_name.size() <= lowered_service.size() + 1) return false;
     return lowered_name.compare(lowered_name.size() - lowered_service.size(), lowered_service.size(), lowered_service) == 0 &&
@@ -47,16 +57,17 @@ bool ends_with_service(const std::string& name, const char* service) {
 }
 
 std::string service_instance_name(const std::string& full_name, const std::string& service_type) {
-    if (full_name.size() > service_type.size() + 1 &&
-        lower_ascii(full_name).compare(full_name.size() - service_type.size(), service_type.size(), lower_ascii(service_type)) == 0) {
-        auto instance = full_name.substr(0, full_name.size() - service_type.size() - 1);
+    const auto normalized_name = trim_trailing_dot(full_name);
+    if (normalized_name.size() > service_type.size() + 1 &&
+        lower_ascii(normalized_name).compare(normalized_name.size() - service_type.size(), service_type.size(), lower_ascii(service_type)) == 0) {
+        auto instance = normalized_name.substr(0, normalized_name.size() - service_type.size() - 1);
         const auto at = instance.find('@');
         if (at != std::string::npos && at + 1 < instance.size()) {
             instance.erase(0, at + 1);
         }
         return instance;
     }
-    return full_name;
+    return normalized_name;
 }
 
 uint16_t read_u16(const std::vector<uint8_t>& packet, size_t offset) {
@@ -397,6 +408,188 @@ public:
     }
 };
 
+std::string narrow_utf16(const wchar_t* text) {
+    if (text == nullptr || *text == L'\0') return {};
+    const int required = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 1) return {};
+
+    std::string result(static_cast<size_t>(required), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, result.data(), required, nullptr, nullptr);
+    result.resize(static_cast<size_t>(required - 1));
+    return result;
+}
+
+std::wstring widen_ascii(const char* text) {
+    std::wstring result;
+    if (text == nullptr) return result;
+    while (*text != '\0') {
+        result.push_back(static_cast<wchar_t>(*text++));
+    }
+    return result;
+}
+
+std::string ipv4_address_from_dns_service(const IP4_ADDRESS* address) {
+    if (address == nullptr) return {};
+
+    char text[INET_ADDRSTRLEN] = {};
+    in_addr ipv4 = {};
+    ipv4.S_un.S_addr = *address;
+    return inet_ntop(AF_INET, &ipv4, text, sizeof(text)) == nullptr ? std::string{} : std::string{text};
+}
+
+struct BrowseContext {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::set<std::wstring> service_names;
+    bool cancelled = false;
+};
+
+struct ResolveContext {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::optional<DiscoveredService> service;
+    bool complete = false;
+};
+
+void WINAPI dns_service_browse_callback(DWORD status, PVOID query_context, PDNS_RECORD record_list) {
+    auto* context = static_cast<BrowseContext*>(query_context);
+    if (context == nullptr) return;
+
+    {
+        std::lock_guard lock(context->mutex);
+        if (status == ERROR_CANCELLED) {
+            context->cancelled = true;
+        } else if (status == ERROR_SUCCESS) {
+            for (auto* record = record_list; record != nullptr; record = record->pNext) {
+                if (record->wType == DNS_TYPE_PTR && record->Data.PTR.pNameHost != nullptr) {
+                    context->service_names.insert(record->Data.PTR.pNameHost);
+                }
+            }
+        }
+    }
+
+    if (record_list != nullptr) {
+        DnsRecordListFree(record_list, DnsFreeRecordList);
+    }
+    context->changed.notify_all();
+}
+
+void WINAPI dns_service_resolve_callback(DWORD status, PVOID query_context, PDNS_SERVICE_INSTANCE instance) {
+    auto* context = static_cast<ResolveContext*>(query_context);
+    if (context == nullptr) return;
+
+    {
+        std::lock_guard lock(context->mutex);
+        if (status == ERROR_SUCCESS && instance != nullptr) {
+            DiscoveredService service;
+            service.full_name = trim_trailing_dot(narrow_utf16(instance->pszInstanceName));
+            service.instance_name = service_instance_name(service.full_name, service.full_name.find(kAirPlayService) != std::string::npos ? kAirPlayService : kRaopService);
+            service.target_host = trim_trailing_dot(narrow_utf16(instance->pszHostName));
+            service.target_address = ipv4_address_from_dns_service(instance->ip4Address);
+            service.port = instance->wPort;
+
+            for (DWORD index = 0; index < instance->dwPropertyCount; ++index) {
+                const auto key = lower_ascii(narrow_utf16(instance->keys[index]));
+                const auto value = narrow_utf16(instance->values[index]);
+                if (!key.empty()) service.txt[key] = value;
+            }
+
+            context->service = std::move(service);
+        }
+        context->complete = true;
+    }
+
+    if (instance != nullptr) {
+        DnsServiceFreeInstance(instance);
+    }
+    context->changed.notify_all();
+}
+
+std::optional<DiscoveredService> resolve_windows_dns_sd_service(const std::wstring& service_name, std::chrono::milliseconds timeout) {
+    ResolveContext context;
+    DNS_SERVICE_CANCEL cancel = {};
+    DNS_SERVICE_RESOLVE_REQUEST request = {};
+    request.Version = DNS_QUERY_REQUEST_VERSION1;
+    request.InterfaceIndex = 0;
+    request.QueryName = const_cast<PWSTR>(service_name.c_str());
+    request.pResolveCompletionCallback = dns_service_resolve_callback;
+    request.pQueryContext = &context;
+
+    const auto status = DnsServiceResolve(&request, &cancel);
+    if (status != DNS_REQUEST_PENDING) {
+        return std::nullopt;
+    }
+
+    {
+        std::unique_lock lock(context.mutex);
+        context.changed.wait_for(lock, timeout, [&]() { return context.complete; });
+    }
+
+    if (!context.complete) {
+        DnsServiceResolveCancel(&cancel);
+        std::unique_lock lock(context.mutex);
+        context.changed.wait_for(lock, std::chrono::milliseconds(250), [&]() { return context.complete; });
+    }
+
+    return context.service;
+}
+
+std::vector<OutputDevice> browse_windows_dns_sd(std::chrono::milliseconds timeout) {
+    std::vector<OutputDevice> devices;
+    std::set<std::string> seen_ids;
+
+    for (const auto* service_type : {kAirPlayService, kRaopService}) {
+        BrowseContext context;
+        DNS_SERVICE_CANCEL cancel = {};
+        DNS_SERVICE_BROWSE_REQUEST request = {};
+        const auto query = widen_ascii(service_type);
+        request.Version = DNS_QUERY_REQUEST_VERSION1;
+        request.InterfaceIndex = 0;
+        request.QueryName = query.c_str();
+        request.pBrowseCallback = dns_service_browse_callback;
+        request.pQueryContext = &context;
+
+        const auto status = DnsServiceBrowse(&request, &cancel);
+        if (status != DNS_REQUEST_PENDING) {
+            continue;
+        }
+
+        {
+            std::unique_lock lock(context.mutex);
+            context.changed.wait_for(lock, timeout);
+        }
+
+        DnsServiceBrowseCancel(&cancel);
+        {
+            std::unique_lock lock(context.mutex);
+            context.changed.wait_for(lock, std::chrono::milliseconds(250), [&]() { return context.cancelled; });
+        }
+
+        std::vector<std::wstring> service_names;
+        {
+            std::lock_guard lock(context.mutex);
+            service_names.assign(context.service_names.begin(), context.service_names.end());
+        }
+
+        for (const auto& service_name : service_names) {
+            auto resolved = resolve_windows_dns_sd_service(service_name, timeout);
+            if (!resolved) continue;
+
+            resolved->service_type = service_type;
+            if (resolved->instance_name.empty()) {
+                resolved->instance_name = service_instance_name(resolved->full_name, service_type);
+            }
+
+            auto device = to_output_device(*resolved);
+            if (seen_ids.insert(device.id).second) {
+                devices.push_back(std::move(device));
+            }
+        }
+    }
+
+    return devices;
+}
+
 std::vector<in_addr> local_ipv4_interfaces() {
     std::vector<in_addr> result;
 
@@ -461,7 +654,7 @@ void join_mdns_multicast(SOCKET socket_handle) {
     }
 }
 
-std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
+std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
     WinsockSession winsock;
     const SOCKET socket_handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_handle == INVALID_SOCKET) {
@@ -552,6 +745,15 @@ std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
     }
 
     return devices;
+}
+
+std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
+    auto devices = browse_windows_dns_sd(timeout);
+    if (!devices.empty()) {
+        return devices;
+    }
+
+    return browse_raw_mdns(timeout);
 }
 #else
 std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds) {
