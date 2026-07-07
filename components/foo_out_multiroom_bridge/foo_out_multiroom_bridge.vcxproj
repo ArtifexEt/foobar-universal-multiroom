@@ -91,6 +91,7 @@
     </ClCompile>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="preferences.cpp" />
+    <ClCompile Include="speaker_selector_element.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="component_version.h" />
