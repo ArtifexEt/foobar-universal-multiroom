@@ -32,6 +32,9 @@ FONT 8, "MS Shell Dlg", 400, 0, 1
     PUSHBUTTON "Add speaker", idManualAddButton, 11, 109, 110, 14
     LTEXT      "Speakers", IDC_STATIC, 11, 139, 95, 13
     CONTROL    "", idSpeakerList, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 11, 156, 452, 112
+    LTEXT      "PIN", IDC_STATIC, 11, 276, 24, 13
+    EDITTEXT   idPairPin, 39, 274, 52, 14, ES_AUTOHSCROLL | ES_NUMBER
+    PUSHBUTTON "Pair selected", idPairButton, 101, 274, 110, 14
 }
 
 IDD_MULTIROOM_PAGE_ABOUT DIALOGEX 0, 0, 480, 305

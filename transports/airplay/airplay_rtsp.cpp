@@ -169,6 +169,31 @@ std::string random_mac_text() {
     return stream.str();
 }
 
+std::vector<uint8_t> hkdf_sha512(
+    const std::string& salt,
+    const std::string& info,
+    const std::vector<uint8_t>& input) {
+    return fxchain::airplay::hkdfSha512(salt, info, input, 32);
+}
+
+std::vector<uint8_t> encrypt_with_named_nonce(
+    const std::vector<uint8_t>& key,
+    const char* nonce,
+    const std::vector<uint8_t>& plaintext) {
+    return fxchain::airplay::chacha20Poly1305Encrypt(key, bytes_from_string(nonce), plaintext, {});
+}
+
+std::vector<uint8_t> decrypt_with_named_nonce(
+    const std::vector<uint8_t>& key,
+    const char* nonce,
+    const std::vector<uint8_t>& encrypted) {
+    auto plaintext = fxchain::airplay::chacha20Poly1305Decrypt(key, bytes_from_string(nonce), encrypted, {});
+    if (!plaintext) {
+        throw std::runtime_error("AirPlay pairing encrypted message failed authentication.");
+    }
+    return *plaintext;
+}
+
 std::vector<uint8_t> make_rtp_header(
     uint8_t payload_type,
     bool marker,
@@ -630,6 +655,8 @@ std::string header_value_from_message(const std::string& message, const std::str
 }  // namespace
 
 class AirPlayRtspControlClient::Connection {
+    friend class AirPlayRtspControlClient;
+
 public:
     Connection() = default;
 
@@ -780,7 +807,10 @@ public:
             });
     }
 
-    AirPlayNegotiatedSession open_airplay2_transient(const OutputDevice& output, const PcmFormat& format) {
+    AirPlayNegotiatedSession open_airplay2_transient(
+        const OutputDevice& output,
+        const PcmFormat& format,
+        const std::optional<AirPlayPairingCredentials>& credentials) {
         if (format.sample_rate != 44100 || format.channels != 2 || format.bits_per_sample != 16) {
             throw std::invalid_argument("AirPlay 2 MVP currently requires 44.1 kHz stereo 16-bit PCM.");
         }
@@ -800,7 +830,17 @@ public:
             "/info",
             ap2_headers()));
 
-        const auto shared_secret = run_transient_pair_setup();
+        AirPlay2Bytes shared_secret;
+        AirPlay2EncryptedKeys keys;
+        if (credentials) {
+            const auto verified = run_pair_verify(*credentials);
+            shared_secret = verified.shared_secret;
+            keys = verified.keys;
+        } else {
+            shared_secret = run_transient_pair_setup();
+            keys = derive_airplay2_encrypted_keys(shared_secret);
+        }
+
         auto audio_key = shared_secret;
         if (audio_key.size() > 32) {
             audio_key.resize(32);
@@ -811,7 +851,6 @@ public:
         ap2_audio_key_ = std::move(audio_key);
         ap2_audio_nonce_ = 0;
 
-        const auto keys = derive_airplay2_encrypted_keys(shared_secret);
         control_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.control_write, keys.control_read);
         event_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.event_read, keys.event_write);
 
@@ -905,13 +944,14 @@ private:
     AirPlayRtspResponse http_post_success(
         const std::string& uri,
         const std::string& content_type,
-        const AirPlay2Bytes& body) {
+        const AirPlay2Bytes& body,
+        const char* hkp = "4") {
         std::ostringstream request;
         request << "POST " << uri << " HTTP/1.1\r\n";
         request << "CSeq: " << next_cseq_++ << "\r\n";
         request << "User-Agent: AirPlay/550.10\r\n";
         request << "Connection: keep-alive\r\n";
-        request << "X-Apple-HKP: 4\r\n";
+        request << "X-Apple-HKP: " << hkp << "\r\n";
         request << "DACP-ID: " << dacp_id_ << "\r\n";
         request << "Active-Remote: " << active_remote_ << "\r\n";
         request << "Client-Instance: " << dacp_id_ << "\r\n";
@@ -936,6 +976,121 @@ private:
                 std::to_string(response.status_code) + " " + response.reason);
         }
         return response;
+    }
+
+    AirPlayPairingCredentials pair_with_pin(const OutputDevice& output, const std::string& pin) {
+        if (pin.empty()) {
+            throw std::invalid_argument("AirPlay PIN cannot be empty.");
+        }
+
+        dacp_id_ = random_hex(8);
+        active_remote_ = std::to_string(random_u32());
+        connect_to(output.endpoint_host, output.endpoint_port);
+
+        static_cast<void>(http_post_success("/pair-pin-start", "application/octet-stream", {}, "3"));
+
+        const auto m1 = fxchain::airplay::tlv::encode({
+            {fxchain::airplay::tlv::Method, {0x00}},
+            {fxchain::airplay::tlv::State, {0x01}},
+        });
+        const auto m2_response = http_post_success("/pair-setup", "application/octet-stream", m1, "3");
+        const auto m2 = fxchain::airplay::tlv::decode(bytes_from_string(m2_response.body));
+        if (auto error = fxchain::airplay::tlv::get(m2, fxchain::airplay::tlv::Error)) {
+            throw std::runtime_error("AirPlay PIN pair-setup M2 returned error " +
+                                     std::to_string(error->empty() ? 0 : error->front()) + ".");
+        }
+
+        const auto salt = fxchain::airplay::tlv::get(m2, fxchain::airplay::tlv::Salt);
+        const auto server_public_key = fxchain::airplay::tlv::get(m2, fxchain::airplay::tlv::PublicKey);
+        if (!salt || !server_public_key) {
+            throw std::runtime_error("AirPlay PIN pair-setup M2 was incomplete.");
+        }
+
+        fxchain::airplay::SrpClient srp;
+        srp.start(pin);
+        if (!srp.process(*salt, *server_public_key)) {
+            throw std::runtime_error("AirPlay PIN pairing rejected receiver parameters.");
+        }
+
+        const auto m3 = fxchain::airplay::tlv::encode({
+            {fxchain::airplay::tlv::State, {0x03}},
+            {fxchain::airplay::tlv::PublicKey, srp.publicA()},
+            {fxchain::airplay::tlv::Proof, srp.proofM1()},
+        });
+        const auto m4_response = http_post_success("/pair-setup", "application/octet-stream", m3, "3");
+        const auto m4 = fxchain::airplay::tlv::decode(bytes_from_string(m4_response.body));
+        if (auto error = fxchain::airplay::tlv::get(m4, fxchain::airplay::tlv::Error)) {
+            throw std::runtime_error("AirPlay PIN was not accepted; pair-setup M4 returned error " +
+                                     std::to_string(error->empty() ? 0 : error->front()) + ".");
+        }
+        if (auto proof = fxchain::airplay::tlv::get(m4, fxchain::airplay::tlv::Proof)) {
+            if (!srp.verifyServerProof(*proof)) {
+                throw std::runtime_error("AirPlay PIN pair-setup server proof verification failed.");
+            }
+        }
+
+        AirPlayPairingCredentials credentials;
+        credentials.output_id = output.id;
+        credentials.client_id = random_uuid_text();
+        credentials.controller_seed = fxchain::airplay::randomBytes(32);
+        const auto controller_public_key = fxchain::airplay::ed25519PublicFromSeed(credentials.controller_seed);
+
+        const auto session_key = hkdf_sha512("Pair-Setup-Encrypt-Salt", "Pair-Setup-Encrypt-Info", srp.sessionKey());
+        const auto controller_sign_key =
+            hkdf_sha512("Pair-Setup-Controller-Sign-Salt", "Pair-Setup-Controller-Sign-Info", srp.sessionKey());
+
+        auto device_info = controller_sign_key;
+        const auto client_id_bytes = bytes_from_string(credentials.client_id);
+        device_info.insert(device_info.end(), client_id_bytes.begin(), client_id_bytes.end());
+        device_info.insert(device_info.end(), controller_public_key.begin(), controller_public_key.end());
+        const auto signature = fxchain::airplay::ed25519Sign(credentials.controller_seed, device_info);
+
+        const auto inner = fxchain::airplay::tlv::encode({
+            {fxchain::airplay::tlv::Identifier, client_id_bytes},
+            {fxchain::airplay::tlv::PublicKey, controller_public_key},
+            {fxchain::airplay::tlv::Signature, signature},
+        });
+        const auto encrypted = encrypt_with_named_nonce(session_key, "PS-Msg05", inner);
+        const auto m5 = fxchain::airplay::tlv::encode({
+            {fxchain::airplay::tlv::State, {0x05}},
+            {fxchain::airplay::tlv::EncryptedData, encrypted},
+        });
+        const auto m6_response = http_post_success("/pair-setup", "application/octet-stream", m5, "3");
+        const auto m6 = fxchain::airplay::tlv::decode(bytes_from_string(m6_response.body));
+        if (auto error = fxchain::airplay::tlv::get(m6, fxchain::airplay::tlv::Error)) {
+            throw std::runtime_error("AirPlay PIN pair-setup M6 returned error " +
+                                     std::to_string(error->empty() ? 0 : error->front()) + ".");
+        }
+
+        const auto encrypted_m6 = fxchain::airplay::tlv::get(m6, fxchain::airplay::tlv::EncryptedData);
+        if (!encrypted_m6) {
+            throw std::runtime_error("AirPlay PIN pair-setup M6 was incomplete.");
+        }
+        const auto decrypted_m6 = decrypt_with_named_nonce(session_key, "PS-Msg06", *encrypted_m6);
+        const auto m6_inner = fxchain::airplay::tlv::decode(decrypted_m6);
+        const auto accessory_id = fxchain::airplay::tlv::get(m6_inner, fxchain::airplay::tlv::Identifier);
+        const auto accessory_public_key = fxchain::airplay::tlv::get(m6_inner, fxchain::airplay::tlv::PublicKey);
+        if (!accessory_id || !accessory_public_key) {
+            throw std::runtime_error("AirPlay PIN pair-setup M6 did not return receiver credentials.");
+        }
+        credentials.accessory_identifier = *accessory_id;
+        credentials.accessory_public_key = *accessory_public_key;
+        return credentials;
+    }
+
+    AirPlay2PairVerifyM2 run_pair_verify(const AirPlayPairingCredentials& credentials) {
+        if (!credentials.valid()) {
+            throw std::runtime_error("Stored AirPlay pairing credentials are incomplete.");
+        }
+
+        AirPlay2PairVerifySession verify(credentials.client_id, credentials.controller_seed);
+        const auto m1_response = http_post_success("/pair-verify", "application/octet-stream", verify.make_m1(), "3");
+        const auto m2 = verify.handle_m2(bytes_from_string(m1_response.body), credentials.accessory_public_key);
+        const auto m3_response = http_post_success("/pair-verify", "application/octet-stream", verify.make_m3(), "3");
+        if (!m3_response.successful()) {
+            throw std::runtime_error("AirPlay pair-verify M3 was rejected.");
+        }
+        return m2;
     }
 
     AirPlay2Bytes run_transient_pair_setup() {
@@ -1345,7 +1500,57 @@ std::string AirPlayRtspResponse::header(const std::string& name) const {
     return it == headers.end() ? std::string{} : it->second;
 }
 
+bool AirPlayPairingCredentials::valid() const {
+    return !output_id.empty() &&
+           !client_id.empty() &&
+           controller_seed.size() == 32 &&
+           !accessory_identifier.empty() &&
+           accessory_public_key.size() == 32;
+}
+
+AirPlayRtspControlClient::AirPlayRtspControlClient(std::shared_ptr<AirPlayPairingStore> pairing_store)
+    : pairing_store_(std::move(pairing_store)) {}
+
 AirPlayRtspControlClient::~AirPlayRtspControlClient() = default;
+
+std::optional<AirPlayPairingCredentials> AirPlayRtspControlClient::load_pairing_credentials(
+    const std::string& output_id) {
+    if (pairing_store_) {
+        auto stored = pairing_store_->load(output_id);
+        if (stored && stored->valid()) {
+            memory_pairing_credentials_[output_id] = *stored;
+            return stored;
+        }
+    }
+
+    const auto it = memory_pairing_credentials_.find(output_id);
+    if (it != memory_pairing_credentials_.end() && it->second.valid()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+void AirPlayRtspControlClient::save_pairing_credentials(const AirPlayPairingCredentials& credentials) {
+    if (!credentials.valid()) {
+        throw std::invalid_argument("Cannot save incomplete AirPlay pairing credentials.");
+    }
+
+    memory_pairing_credentials_[credentials.output_id] = credentials;
+    if (pairing_store_) {
+        pairing_store_->save(credentials);
+    }
+}
+
+AirPlayPairingResult AirPlayRtspControlClient::pair(const OutputDevice& output, const std::string& pin) {
+    auto connection = std::make_unique<Connection>();
+    auto credentials = connection->pair_with_pin(output, pin);
+    save_pairing_credentials(credentials);
+
+    AirPlayPairingResult result;
+    result.credentials = std::move(credentials);
+    result.stored = pairing_store_ != nullptr;
+    return result;
+}
 
 AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& output, const PcmFormat& format) {
     const auto open_legacy_l16 = [&](std::unique_ptr<Connection> connection) {
@@ -1419,7 +1624,7 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     if (output.supports_airplay2) {
         try {
             auto connection = std::make_unique<Connection>();
-            auto session = connection->open_airplay2_transient(output, format);
+            auto session = connection->open_airplay2_transient(output, format, load_pairing_credentials(output.id));
             connections_[output.id] = std::move(connection);
             return session;
         } catch (const std::exception& airplay2_error) {
@@ -1502,6 +1707,19 @@ void AirPlayRtspControlClient::close(const std::string& output_id, const std::st
     }
 }
 
+AirPlayPairingResult AirPlayLoopbackControlClient::pair(const OutputDevice& output, const std::string& pin) {
+    static_cast<void>(pin);
+
+    AirPlayPairingResult result;
+    result.credentials.output_id = output.id;
+    result.credentials.client_id = "loopback-client";
+    result.credentials.controller_seed.assign(32, 0x11);
+    result.credentials.accessory_identifier = bytes_from_string("loopback-accessory");
+    result.credentials.accessory_public_key.assign(32, 0x22);
+    result.stored = false;
+    return result;
+}
+
 AirPlayNegotiatedSession AirPlayLoopbackControlClient::open(const OutputDevice& output, const PcmFormat& format) {
     static_cast<void>(format);
 
@@ -1579,8 +1797,9 @@ size_t AirPlayLoopbackControlClient::close_count() const {
     return close_count_;
 }
 
-std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client() {
-    return std::make_shared<AirPlayRtspControlClient>();
+std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(
+    std::shared_ptr<AirPlayPairingStore> pairing_store) {
+    return std::make_shared<AirPlayRtspControlClient>(std::move(pairing_store));
 }
 
 std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client() {

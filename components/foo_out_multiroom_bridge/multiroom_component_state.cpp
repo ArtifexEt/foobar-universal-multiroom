@@ -9,6 +9,11 @@
 
 namespace {
 
+static constexpr GUID guid_cfg_airplay_pairing_credentials = {
+    0xf9fecc9d, 0x639a, 0x45ad, {0x8a, 0x11, 0x4b, 0x55, 0x5f, 0x6f, 0x50, 0xa4}};
+
+static cfg_string cfg_airplay_pairing_credentials(guid_cfg_airplay_pairing_credentials, "");
+
 std::wstring widen_utf8(const std::string& text) {
     if (text.empty()) return {};
     const int required = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
@@ -38,6 +43,91 @@ std::string lowercase_ascii(std::string text) {
     return text;
 }
 
+std::string hex_from_bytes(const std::vector<uint8_t>& bytes) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(bytes.size() * 2);
+    for (const auto byte : bytes) {
+        result.push_back(kHex[(byte >> 4) & 0x0F]);
+        result.push_back(kHex[byte & 0x0F]);
+    }
+    return result;
+}
+
+int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return -1;
+}
+
+std::vector<uint8_t> bytes_from_hex(const std::string& text) {
+    if ((text.size() % 2) != 0) {
+        return {};
+    }
+
+    std::vector<uint8_t> result;
+    result.reserve(text.size() / 2);
+    for (size_t index = 0; index < text.size(); index += 2) {
+        const int high = hex_value(text[index]);
+        const int low = hex_value(text[index + 1]);
+        if (high < 0 || low < 0) {
+            return {};
+        }
+        result.push_back(static_cast<uint8_t>((high << 4) | low));
+    }
+    return result;
+}
+
+std::vector<std::string> split_pipe_fields(const std::string& line) {
+    std::vector<std::string> fields;
+    std::stringstream stream(line);
+    std::string field;
+    while (std::getline(stream, field, '|')) {
+        fields.push_back(field);
+    }
+    return fields;
+}
+
+std::vector<multiroom::airplay::AirPlayPairingCredentials> parse_pairing_credentials_text(const std::string& text) {
+    std::vector<multiroom::airplay::AirPlayPairingCredentials> result;
+    std::stringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto fields = split_pipe_fields(line);
+        if (fields.size() != 5) {
+            continue;
+        }
+
+        multiroom::airplay::AirPlayPairingCredentials item;
+        item.output_id = fields[0];
+        item.client_id = fields[1];
+        item.controller_seed = bytes_from_hex(fields[2]);
+        item.accessory_identifier = bytes_from_hex(fields[3]);
+        item.accessory_public_key = bytes_from_hex(fields[4]);
+        if (item.valid()) {
+            result.push_back(std::move(item));
+        }
+    }
+    return result;
+}
+
+std::string format_pairing_credentials_text(
+    const std::vector<multiroom::airplay::AirPlayPairingCredentials>& credentials) {
+    std::ostringstream out;
+    for (const auto& item : credentials) {
+        if (!item.valid()) {
+            continue;
+        }
+        out << item.output_id << '|'
+            << item.client_id << '|'
+            << hex_from_bytes(item.controller_seed) << '|'
+            << hex_from_bytes(item.accessory_identifier) << '|'
+            << hex_from_bytes(item.accessory_public_key) << '\n';
+    }
+    return out.str();
+}
+
 std::vector<std::string> selected_ids(const std::vector<multiroom::OutputDevice>& outputs) {
     std::vector<std::string> result;
     for (const auto& output : outputs) {
@@ -55,6 +145,46 @@ void validate_playback_format(const multiroom::PcmFormat& format) {
     }
 }
 
+class FoobarAirPlayPairingStore final : public multiroom::airplay::AirPlayPairingStore {
+public:
+    std::optional<multiroom::airplay::AirPlayPairingCredentials> load(const std::string& output_id) override {
+        std::lock_guard lock(mutex_);
+        const auto text = cfg_airplay_pairing_credentials.get();
+        for (auto& item : parse_pairing_credentials_text(text.c_str())) {
+            if (item.output_id == output_id) {
+                return item;
+            }
+        }
+        return std::nullopt;
+    }
+
+    void save(const multiroom::airplay::AirPlayPairingCredentials& credentials) override {
+        if (!credentials.valid()) {
+            throw std::invalid_argument("Cannot save incomplete AirPlay pairing credentials.");
+        }
+
+        std::lock_guard lock(mutex_);
+        auto all = parse_pairing_credentials_text(cfg_airplay_pairing_credentials.get().c_str());
+        bool replaced = false;
+        for (auto& item : all) {
+            if (item.output_id == credentials.output_id) {
+                item = credentials;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            all.push_back(credentials);
+        }
+
+        const auto serialized = format_pairing_credentials_text(all);
+        cfg_airplay_pairing_credentials = serialized.c_str();
+    }
+
+private:
+    std::mutex mutex_;
+};
+
 }  // namespace
 
 MultiroomComponentState& MultiroomComponentState::instance() {
@@ -62,12 +192,18 @@ MultiroomComponentState& MultiroomComponentState::instance() {
     return state;
 }
 
+MultiroomComponentState::MultiroomComponentState()
+    : transport_(multiroom::airplay::make_airplay_rtsp_control_client(std::make_shared<FoobarAirPlayPairingStore>())) {}
+
 MultiroomComponentState::~MultiroomComponentState() {
     if (refresh_thread_.joinable()) {
         refresh_thread_.join();
     }
     if (control_thread_.joinable()) {
         control_thread_.join();
+    }
+    if (pairing_thread_.joinable()) {
+        pairing_thread_.join();
     }
 }
 
@@ -273,6 +409,11 @@ bool MultiroomComponentState::control_in_progress() {
     return control_in_progress_;
 }
 
+bool MultiroomComponentState::pairing_in_progress() {
+    std::lock_guard lock(mutex_);
+    return pairing_in_progress_;
+}
+
 std::vector<multiroom::OutputDevice> MultiroomComponentState::outputs() {
     std::lock_guard lock(mutex_);
     return cached_outputs_;
@@ -338,6 +479,68 @@ bool MultiroomComponentState::add_manual_airplay_output(
         std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
         return false;
+    }
+}
+
+void MultiroomComponentState::pair_output(const std::string& id, const std::string& pin) {
+    try {
+        ensure_discovery_started();
+        if (pin.empty()) {
+            throw std::invalid_argument("AirPlay PIN cannot be empty.");
+        }
+
+        {
+            std::lock_guard lock(mutex_);
+            if (pairing_in_progress_) {
+                throw std::runtime_error("AirPlay pairing is already in progress.");
+            }
+            pairing_in_progress_ = true;
+            last_error_.clear();
+        }
+
+        if (pairing_thread_.joinable()) {
+            pairing_thread_.join();
+        }
+        pairing_thread_ = std::thread(&MultiroomComponentState::pairing_worker, this, id, pin);
+    } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
+        pairing_in_progress_ = false;
+        last_error_ = widen_utf8(e.what());
+    }
+}
+
+void MultiroomComponentState::pairing_worker(std::string id, std::string pin) {
+    std::wstring pairing_error;
+    std::string pairing_error_narrow;
+    bool pairing_ok = false;
+
+    try {
+        std::lock_guard transport_lock(transport_mutex_);
+        static_cast<void>(transport_.pair_output(id, pin));
+        pairing_ok = true;
+    } catch (const std::exception& e) {
+        pairing_error_narrow = e.what();
+        pairing_error = widen_utf8(e.what());
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+        pairing_in_progress_ = false;
+        if (pairing_ok) {
+            last_error_.clear();
+        } else {
+            last_error_ = std::move(pairing_error);
+        }
+    }
+
+    if (pairing_ok) {
+        FB2K_console_formatter() << "[Universal Multiroom] AirPlay PIN pairing completed";
+        if (playback_open_.load()) {
+            schedule_control_update();
+        }
+    } else {
+        FB2K_console_formatter() << "[Universal Multiroom] AirPlay PIN pairing failed: "
+                                  << pairing_error_narrow.c_str();
     }
 }
 
@@ -503,6 +706,7 @@ std::wstring MultiroomComponentState::status_text() {
     std::lock_guard lock(mutex_);
     if (!last_error_.empty()) return L"AirPlay discovery error: " + last_error_;
     if (!discovery_started_) return L"AirPlay discovery: not started";
+    if (pairing_in_progress_) return L"AirPlay speakers: pairing";
     if (control_in_progress_) return L"AirPlay speakers: applying selection";
     if (refresh_in_progress_) {
         std::wstringstream stream;

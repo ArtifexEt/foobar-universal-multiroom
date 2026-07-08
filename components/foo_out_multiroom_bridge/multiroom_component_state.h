@@ -22,6 +22,8 @@ public:
     bool control_in_progress();
     std::vector<multiroom::OutputDevice> outputs();
     bool add_manual_airplay_output(const std::wstring& name, const std::wstring& host, std::uint16_t port);
+    void pair_output(const std::string& id, const std::string& pin);
+    bool pairing_in_progress();
     void toggle_output(const std::string& id);
     void set_output_volume(const std::string& id, int volume);
     void open_playback_stream(const multiroom::PcmFormat& format);
@@ -32,12 +34,13 @@ public:
     std::wstring status_text();
 
 private:
-    MultiroomComponentState() = default;
+    MultiroomComponentState();
 
     void ensure_discovery_started();
     void refresh_outputs_worker();
     void schedule_control_update();
     void control_update_worker();
+    void pairing_worker(std::string id, std::string pin);
 
     std::mutex mutex_;
     std::mutex transport_mutex_;
@@ -46,12 +49,14 @@ private:
     multiroom::PcmFormat playback_format_;
     std::thread refresh_thread_;
     std::thread control_thread_;
+    std::thread pairing_thread_;
     std::vector<multiroom::OutputDevice> cached_outputs_;
     bool discovery_started_ = false;
     bool refresh_in_progress_ = false;
     bool refresh_requested_ = false;
     bool control_in_progress_ = false;
     bool control_requested_ = false;
+    bool pairing_in_progress_ = false;
     bool playback_format_valid_ = false;
     std::atomic_bool playback_open_ = false;
     size_t refresh_count_ = 0;

@@ -41,6 +41,7 @@ class AirPlaySessionManager {
 public:
     explicit AirPlaySessionManager(std::shared_ptr<AirPlayControlClient> control_client = make_airplay_rtsp_control_client());
 
+    AirPlayPairingResult pair_output(const OutputDevice& output, const std::string& pin);
     void prepare_outputs(const std::vector<OutputDevice>& outputs);
     void open_for_outputs(const std::vector<OutputDevice>& outputs, const PcmFormat& format);
     void close_missing_outputs(const std::vector<OutputDevice>& outputs);

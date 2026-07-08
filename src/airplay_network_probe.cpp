@@ -23,15 +23,18 @@ struct ProbeOptions {
     std::chrono::milliseconds duration{5000};
     std::string target = "first";
     bool play = false;
+    bool pair = false;
     bool require_speaker = false;
     bool list_txt = false;
     int volume = 35;
+    std::string pin;
 };
 
 void print_usage() {
     std::cout
         << "Usage:\n"
         << "  MultiroomAirPlayNetworkProbe [--timeout-ms n] [--list-txt]\n"
+        << "  MultiroomAirPlayNetworkProbe --pair --pin nnnn [--target first|id|name]\n"
         << "  MultiroomAirPlayNetworkProbe --play [--target first|all|id] [--duration-ms n] [--volume 0-100] [--require-speaker]\n";
 }
 
@@ -62,6 +65,10 @@ ProbeOptions parse_options(int argc, char** argv) {
             options.volume = std::clamp(parse_int_arg(argv[++i], "--volume"), 0, 100);
         } else if (arg == "--play") {
             options.play = true;
+        } else if (arg == "--pair") {
+            options.pair = true;
+        } else if (arg == "--pin" && i + 1 < argc) {
+            options.pin = argv[++i];
         } else if (arg == "--require-speaker") {
             options.require_speaker = true;
         } else if (arg == "--list-txt") {
@@ -79,6 +86,9 @@ ProbeOptions parse_options(int argc, char** argv) {
     }
     if (options.duration.count() <= 0) {
         throw std::runtime_error("--duration-ms must be greater than zero.");
+    }
+    if (options.pair && options.pin.empty()) {
+        throw std::runtime_error("--pair requires --pin.");
     }
     return options;
 }
@@ -233,6 +243,22 @@ int main(int argc, char** argv) {
                 return EXIT_FAILURE;
             }
             return EXIT_SUCCESS;
+        }
+
+        if (options.pair) {
+            const auto targets = select_targets(outputs, options.target);
+            if (targets.empty()) {
+                std::cerr << "No AirPlay 2 target matched '" << options.target << "'.\n";
+                return EXIT_FAILURE;
+            }
+            if (targets.size() != 1) {
+                std::cerr << "Pairing requires exactly one target; matched " << targets.size() << ".\n";
+                return EXIT_FAILURE;
+            }
+
+            auto result = transport.pair_output(targets.front(), options.pin);
+            std::cout << "Paired " << targets.front()
+                      << ", credentials " << (result.stored ? "stored" : "not stored") << ".\n";
         }
 
         if (!options.play) {

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,10 +40,33 @@ struct AirPlayNegotiatedSession {
     AirPlayTransportPorts ports;
 };
 
+struct AirPlayPairingCredentials {
+    std::string output_id;
+    std::string client_id;
+    std::vector<uint8_t> controller_seed;
+    std::vector<uint8_t> accessory_identifier;
+    std::vector<uint8_t> accessory_public_key;
+
+    bool valid() const;
+};
+
+struct AirPlayPairingResult {
+    AirPlayPairingCredentials credentials;
+    bool stored = false;
+};
+
+class AirPlayPairingStore {
+public:
+    virtual ~AirPlayPairingStore() = default;
+    virtual std::optional<AirPlayPairingCredentials> load(const std::string& output_id) = 0;
+    virtual void save(const AirPlayPairingCredentials& credentials) = 0;
+};
+
 class AirPlayControlClient {
 public:
     virtual ~AirPlayControlClient() = default;
 
+    virtual AirPlayPairingResult pair(const OutputDevice& output, const std::string& pin) = 0;
     virtual AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) = 0;
     virtual void send_audio(
         const std::string& output_id,
@@ -60,8 +84,10 @@ public:
 
 class AirPlayRtspControlClient final : public AirPlayControlClient {
 public:
+    explicit AirPlayRtspControlClient(std::shared_ptr<AirPlayPairingStore> pairing_store = {});
     ~AirPlayRtspControlClient() override;
 
+    AirPlayPairingResult pair(const OutputDevice& output, const std::string& pin) override;
     AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) override;
     void send_audio(
         const std::string& output_id,
@@ -79,11 +105,17 @@ public:
 private:
     class Connection;
 
+    std::optional<AirPlayPairingCredentials> load_pairing_credentials(const std::string& output_id);
+    void save_pairing_credentials(const AirPlayPairingCredentials& credentials);
+
+    std::shared_ptr<AirPlayPairingStore> pairing_store_;
+    std::map<std::string, AirPlayPairingCredentials> memory_pairing_credentials_;
     std::map<std::string, std::unique_ptr<Connection>> connections_;
 };
 
 class AirPlayLoopbackControlClient final : public AirPlayControlClient {
 public:
+    AirPlayPairingResult pair(const OutputDevice& output, const std::string& pin) override;
     AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) override;
     void send_audio(
         const std::string& output_id,
@@ -112,7 +144,7 @@ private:
     size_t close_count_ = 0;
 };
 
-std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client();
+std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(std::shared_ptr<AirPlayPairingStore> pairing_store = {});
 std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client();
 
 }  // namespace multiroom::airplay

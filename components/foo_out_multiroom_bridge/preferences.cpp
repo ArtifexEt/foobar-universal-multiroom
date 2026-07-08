@@ -127,6 +127,20 @@ bool parse_port(const std::wstring& text, std::uint16_t& port) {
     return true;
 }
 
+std::string narrow_pin(const std::wstring& text) {
+    std::string pin;
+    for (wchar_t ch : text) {
+        if (std::iswspace(ch) != 0) {
+            continue;
+        }
+        if (ch < L'0' || ch > L'9') {
+            return {};
+        }
+        pin.push_back(static_cast<char>('0' + (ch - L'0')));
+    }
+    return pin;
+}
+
 class preferences_instance : public CDialogImpl<preferences_instance>, public preferences_page_instance {
 public:
     enum { IDD = IDD_MULTIROOM_PREFERENCES };
@@ -344,6 +358,9 @@ private:
         if (id == idManualAddButton) {
             return add_manual_airplay_output();
         }
+        if (id == idPairButton) {
+            return pair_selected_airplay_output();
+        }
 
         return FALSE;
     }
@@ -385,11 +402,39 @@ private:
         return TRUE;
     }
 
+    INT_PTR pair_selected_airplay_output() {
+        HWND list = find_dlg_item(wnd_, idSpeakerList);
+        if (list == nullptr) return TRUE;
+
+        const int selected = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+        const auto outputs = MultiroomComponentState::instance().outputs();
+        if (selected < 0 || selected >= static_cast<int>(outputs.size())) {
+            ::MessageBoxW(wnd_, L"Select an AirPlay speaker from the list.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            return TRUE;
+        }
+
+        const auto pin = narrow_pin(trim(text_from_item(wnd_, idPairPin)));
+        if (pin.empty()) {
+            ::MessageBoxW(wnd_, L"Enter the AirPlay PIN shown by the speaker or TV.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            if (HWND pin_control = find_dlg_item(wnd_, idPairPin); pin_control != nullptr) {
+                ::SetFocus(pin_control);
+                ::SendMessageW(pin_control, EM_SETSEL, 0, -1);
+            }
+            return TRUE;
+        }
+
+        MultiroomComponentState::instance().pair_output(outputs[static_cast<size_t>(selected)].id, pin);
+        update_status_page();
+        ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
+        return TRUE;
+    }
+
     INT_PTR on_timer(WPARAM wp) {
         if (wp != kStatusRefreshTimer) return FALSE;
 
         update_status_page();
-        if (!MultiroomComponentState::instance().refresh_in_progress()) {
+        if (!MultiroomComponentState::instance().refresh_in_progress() &&
+            !MultiroomComponentState::instance().pairing_in_progress()) {
             ::KillTimer(wnd_, kStatusRefreshTimer);
         }
         return TRUE;

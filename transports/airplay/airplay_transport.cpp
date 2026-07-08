@@ -33,6 +33,18 @@ std::vector<OutputDevice> AirPlayTransport::list_outputs() {
     return registry_.list();
 }
 
+AirPlayPairingResult AirPlayTransport::pair_output(const std::string& id, const std::string& pin) {
+    sync_discovered_outputs();
+    const auto output = registry_.find(id);
+    if (!output) {
+        throw std::out_of_range("Unknown AirPlay output: " + id);
+    }
+    if (!output->supports_airplay2) {
+        throw std::runtime_error("AirPlay PIN pairing requires an AirPlay 2 output: " + id);
+    }
+    return sessions_.pair_output(*output, pin);
+}
+
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
     sync_discovered_outputs();
     registry_.set_enabled_outputs(ids);

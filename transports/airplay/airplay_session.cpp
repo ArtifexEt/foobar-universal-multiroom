@@ -47,6 +47,10 @@ AirPlaySessionManager::AirPlaySessionManager(std::shared_ptr<AirPlayControlClien
     }
 }
 
+AirPlayPairingResult AirPlaySessionManager::pair_output(const OutputDevice& output, const std::string& pin) {
+    return control_client_->pair(output, pin);
+}
+
 void AirPlaySessionManager::prepare_outputs(const std::vector<OutputDevice>& outputs) {
     std::lock_guard lock(mutex_);
 

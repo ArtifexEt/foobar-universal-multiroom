@@ -70,6 +70,19 @@ public:
     explicit SelectiveFailingControlClient(std::set<std::string> failing_outputs)
         : failing_outputs_(std::move(failing_outputs)) {}
 
+    multiroom::airplay::AirPlayPairingResult pair(
+        const multiroom::OutputDevice& output,
+        const std::string& pin) override {
+        static_cast<void>(pin);
+        multiroom::airplay::AirPlayPairingResult result;
+        result.credentials.output_id = output.id;
+        result.credentials.client_id = "selective-client";
+        result.credentials.controller_seed.assign(32, 0x33);
+        result.credentials.accessory_identifier = {'s', 'e', 'l', 'e', 'c', 't', 'i', 'v', 'e'};
+        result.credentials.accessory_public_key.assign(32, 0x44);
+        return result;
+    }
+
     multiroom::airplay::AirPlayNegotiatedSession open(
         const multiroom::OutputDevice& output,
         const multiroom::PcmFormat& format) override {
