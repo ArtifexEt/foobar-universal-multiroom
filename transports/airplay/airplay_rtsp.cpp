@@ -790,6 +790,11 @@ public:
         connect_to(output.endpoint_host, output.endpoint_port);
         bind_transport_ports();
 
+        static_cast<void>(request_success(
+            "GET",
+            "/info",
+            ap2_headers()));
+
         const auto shared_secret = run_transient_pair_setup();
         auto audio_key = shared_secret;
         if (audio_key.size() > 32) {
@@ -1337,7 +1342,7 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     const auto open_legacy_l16 = [&](std::unique_ptr<Connection> connection) {
         connection->connect_to(output.endpoint_host, output.endpoint_port);
 
-        const auto options_response = connection->request_success("OPTIONS", "*");
+        const auto info_response = connection->request_success("GET", "/info");
         const auto stream_uri = make_stream_uri(output);
         connection->set_stream_uri(stream_uri);
         const auto sdp = make_announce_sdp(output, format);
@@ -1366,7 +1371,7 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
 
         auto rtsp_session_id = session_id_from_header(setup_response.header("Session"));
         if (rtsp_session_id.empty()) {
-            rtsp_session_id = session_id_from_header(options_response.header("Session"));
+            rtsp_session_id = session_id_from_header(info_response.header("Session"));
         }
         if (rtsp_session_id.empty()) {
             throw std::runtime_error("AirPlay RTSP SETUP did not return a session id.");
@@ -1391,8 +1396,8 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
         AirPlayNegotiatedSession session;
         session.rtsp_session_id = rtsp_session_id;
         session.stream_uri = stream_uri;
-        session.server_name = options_response.header("Server");
-        session.supported_methods = split_methods(options_response.header("Public"));
+        session.server_name = info_response.header("Server");
+        session.supported_methods = {"GET", "ANNOUNCE", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
         session.ports = local_ports;
         session.ports.server_data_port = server_data_port;
         session.ports.server_control_port = transport_port(transport_parameters, "control_port");
