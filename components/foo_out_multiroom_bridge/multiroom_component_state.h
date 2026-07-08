@@ -4,6 +4,7 @@
 #include "../../transports/airplay/airplay_transport.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -18,6 +19,7 @@ public:
     void refresh_outputs();
     bool refresh_in_progress();
     std::vector<multiroom::OutputDevice> outputs();
+    bool add_manual_airplay_output(const std::wstring& name, const std::wstring& host, std::uint16_t port);
     void toggle_output(const std::string& id);
     void set_output_volume(const std::string& id, int volume);
     void open_playback_stream(const multiroom::PcmFormat& format);
