@@ -393,9 +393,11 @@ void normalize_service(DiscoveredService& service) {
 }
 
 std::string device_id_from(const DiscoveredService& service) {
-    auto id = txt_value(service.txt, "deviceid");
-    if (!id.empty()) id = normalize_hardware_id(std::move(id));
-    if (id.empty()) id = txt_value(service.txt, "pk");
+    auto id = txt_value(service.txt, "pk");
+    if (id.empty()) {
+        id = txt_value(service.txt, "deviceid");
+        if (!id.empty()) id = normalize_hardware_id(std::move(id));
+    }
     if (id.empty()) {
         auto instance = service_instance_prefix(service.full_name, service.service_type);
         const auto at = instance.find('@');
