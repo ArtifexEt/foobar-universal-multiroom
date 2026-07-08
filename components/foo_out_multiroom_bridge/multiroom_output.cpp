@@ -115,6 +115,7 @@ private:
         } catch (const std::exception& e) {
             throw_output_error(e);
         }
+        SetEvent(wake_event_);
     }
 
     t_size can_write_samples() override { return kWritableFramesHint; }
