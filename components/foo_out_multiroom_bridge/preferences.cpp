@@ -3,7 +3,13 @@
 #include "multiroom_component_state.h"
 #include "preferences_resource.h"
 
+#include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstdlib>
+#include <cwctype>
+#include <cstdint>
+#include <string>
 
 #ifndef WM_DPICHANGED_AFTERPARENT
 #define WM_DPICHANGED_AFTERPARENT 0x02E3
@@ -24,8 +30,27 @@ enum class Page {
     Count,
 };
 
+struct FindChildState {
+    int id = 0;
+    HWND wnd = nullptr;
+};
+
+BOOL CALLBACK find_child_by_id(HWND child, LPARAM param) {
+    auto* state = reinterpret_cast<FindChildState*>(param);
+    if (state != nullptr && ::GetDlgCtrlID(child) == state->id) {
+        state->wnd = child;
+        return FALSE;
+    }
+    return TRUE;
+}
+
 HWND find_dlg_item(HWND wnd, int id) {
-    return wnd != nullptr ? ::GetDlgItem(wnd, id) : nullptr;
+    if (wnd == nullptr) return nullptr;
+    if (HWND direct = ::GetDlgItem(wnd, id); direct != nullptr) return direct;
+
+    FindChildState state{id, nullptr};
+    ::EnumChildWindows(wnd, find_child_by_id, reinterpret_cast<LPARAM>(&state));
+    return state.wnd;
 }
 
 std::wstring widen(const char* text) {
@@ -37,6 +62,51 @@ std::wstring widen(const char* text) {
     MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), required);
     result.resize(static_cast<size_t>(required - 1));
     return result;
+}
+
+std::wstring text_from_item(HWND wnd, int id) {
+    HWND item = find_dlg_item(wnd, id);
+    if (item == nullptr) return {};
+
+    const int length = ::GetWindowTextLengthW(item);
+    if (length <= 0) return {};
+
+    std::wstring result(static_cast<size_t>(length) + 1, L'\0');
+    const int copied = ::GetWindowTextW(item, result.data(), length + 1);
+    result.resize(static_cast<size_t>(std::max(copied, 0)));
+    return result;
+}
+
+std::wstring trim(std::wstring text) {
+    size_t first = 0;
+    while (first < text.size() && std::iswspace(text[first]) != 0) {
+        ++first;
+    }
+    if (first == text.size()) return {};
+
+    size_t last = text.size();
+    while (last > first && std::iswspace(text[last - 1]) != 0) {
+        --last;
+    }
+    return text.substr(first, last - first);
+}
+
+bool parse_port(const std::wstring& text, std::uint16_t& port) {
+    if (text.empty()) return false;
+
+    wchar_t* end = nullptr;
+    errno = 0;
+    const unsigned long value = std::wcstoul(text.c_str(), &end, 10);
+    while (end != nullptr && std::iswspace(*end) != 0) {
+        ++end;
+    }
+
+    if (errno == ERANGE || end == text.c_str() || (end != nullptr && *end != L'\0') || value == 0 || value > 65535) {
+        return false;
+    }
+
+    port = static_cast<std::uint16_t>(value);
+    return true;
 }
 
 class preferences_instance : public CDialogImpl<preferences_instance>, public preferences_page_instance {
@@ -133,6 +203,7 @@ private:
 
         create_page(Page::Status, IDD_MULTIROOM_PAGE_STATUS);
         create_page(Page::About, IDD_MULTIROOM_PAGE_ABOUT);
+        populate_status_page();
         update_status_page();
         populate_about_page();
         position_pages();
@@ -166,6 +237,13 @@ private:
         if (version != nullptr) {
             const auto text = widen(MULTIROOM_COMPONENT_VERSION);
             ::SetWindowTextW(version, text.c_str());
+        }
+    }
+
+    void populate_status_page() {
+        HWND port = find_dlg_item(wnd_, idManualPort);
+        if (port != nullptr && ::GetWindowTextLengthW(port) == 0) {
+            ::SetWindowTextW(port, L"7000");
         }
     }
 
@@ -220,8 +298,48 @@ private:
             ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
             return TRUE;
         }
+        if (id == idManualAddButton) {
+            return add_manual_airplay_output();
+        }
 
         return FALSE;
+    }
+
+    INT_PTR add_manual_airplay_output() {
+        auto name = trim(text_from_item(wnd_, idManualName));
+        auto host = trim(text_from_item(wnd_, idManualHost));
+        auto port_text = trim(text_from_item(wnd_, idManualPort));
+
+        if (host.empty()) {
+            ::MessageBoxW(wnd_, L"Enter a host or IP address.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            if (HWND host_control = find_dlg_item(wnd_, idManualHost); host_control != nullptr) {
+                ::SetFocus(host_control);
+            }
+            return TRUE;
+        }
+
+        std::uint16_t port = 0;
+        if (!parse_port(port_text, port)) {
+            ::MessageBoxW(wnd_, L"Enter a port from 1 to 65535.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            if (HWND port_control = find_dlg_item(wnd_, idManualPort); port_control != nullptr) {
+                ::SetFocus(port_control);
+                ::SendMessageW(port_control, EM_SETSEL, 0, -1);
+            }
+            return TRUE;
+        }
+
+        const bool added = MultiroomComponentState::instance().add_manual_airplay_output(name, host, port);
+        update_status_page();
+        if (added) {
+            if (HWND name_control = find_dlg_item(wnd_, idManualName); name_control != nullptr) {
+                ::SetWindowTextW(name_control, L"");
+            }
+            if (HWND host_control = find_dlg_item(wnd_, idManualHost); host_control != nullptr) {
+                ::SetWindowTextW(host_control, L"");
+                ::SetFocus(host_control);
+            }
+        }
+        return TRUE;
     }
 
     INT_PTR on_timer(WPARAM wp) {

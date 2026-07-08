@@ -30,7 +30,8 @@ without changing the foobar UI.
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
   volume sliders.
 - Preferences expose status, refresh, repository, and support actions with
-  foobar dark-mode/scaling hooks.
+  foobar dark-mode/scaling hooks, plus a manual AirPlay host/IP + port fallback
+  for networks where mDNS discovery is blocked or unreliable.
 - The transport-neutral core includes output state, packet scheduling, stream
   clocking, and the AirPlay transport boundary.
 - AirPlay discovery now classifies AirPlay 2, legacy unencrypted L16, auth, and
