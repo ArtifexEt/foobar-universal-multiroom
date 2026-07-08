@@ -821,8 +821,7 @@ public:
             ap2_headers());
         static_cast<void>(info_response);
 
-        const auto local_ip = local_address_text();
-        stream_uri_ = "rtsp://" + local_ip + "/" + std::to_string(ap2_session_id_);
+        stream_uri_ = "rtsp://" + output.endpoint_host + "/" + std::to_string(ap2_session_id_);
         set_stream_uri(stream_uri_);
 
         const auto session_body = make_ap2_session_setup_body();
