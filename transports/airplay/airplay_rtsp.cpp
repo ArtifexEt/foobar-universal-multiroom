@@ -692,7 +692,12 @@ public:
         const std::string& uri,
         std::map<std::string, std::string> headers = {},
         std::string body = {}) {
-        auto response = request(method, uri, std::move(headers), std::move(body));
+        AirPlayRtspResponse response;
+        try {
+            response = request(method, uri, std::move(headers), std::move(body));
+        } catch (const std::exception& e) {
+            throw std::runtime_error("AirPlay RTSP " + method + " " + uri + " failed: " + e.what());
+        }
         if (!response.successful()) {
             throw std::runtime_error(
                 "AirPlay RTSP " + method + " failed with status " +
@@ -916,8 +921,13 @@ private:
         request << "Content-Length: " << body.size() << "\r\n\r\n";
         request << string_from_bytes(body);
 
-        send_all(request.str());
-        auto response = read_response();
+        AirPlayRtspResponse response;
+        try {
+            send_all(request.str());
+            response = read_response();
+        } catch (const std::exception& e) {
+            throw std::runtime_error("AirPlay 2 HTTP " + uri + " failed: " + e.what());
+        }
         if (!response.successful()) {
             if (response.status_code == 470 || response.status_code == 403) {
                 throw std::runtime_error("AirPlay 2 device requires explicit PIN pairing before streaming.");
