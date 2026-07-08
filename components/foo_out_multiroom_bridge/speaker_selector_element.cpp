@@ -211,6 +211,7 @@ private:
             sync_control_values();
             Invalidate();
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+            SetTimer(kRefreshTimer, 250);
             return 0;
         }
 
@@ -233,7 +234,8 @@ private:
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
         }
 
-        if (!MultiroomComponentState::instance().refresh_in_progress()) {
+        if (!MultiroomComponentState::instance().refresh_in_progress() &&
+            !MultiroomComponentState::instance().control_in_progress()) {
             KillTimer(kRefreshTimer);
         }
         return 0;

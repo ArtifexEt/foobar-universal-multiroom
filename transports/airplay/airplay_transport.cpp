@@ -38,9 +38,6 @@ void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) 
     registry_.set_enabled_outputs(ids);
     sessions_.prepare_outputs(registry_.list());
     sessions_.close_missing_outputs(registry_.list());
-    if (stream_open_) {
-        sessions_.open_for_outputs(registry_.list(), stream_format_);
-    }
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
@@ -58,9 +55,15 @@ void AirPlayTransport::open_stream(const PcmFormat& format) {
     }
 
     stream_format_ = format;
-    sessions_.flush();
-    sessions_.open_for_outputs(registry_.list(), stream_format_);
     stream_open_ = true;
+}
+
+void AirPlayTransport::connect_selected_outputs() {
+    if (!stream_open_) {
+        return;
+    }
+
+    sessions_.open_for_outputs(registry_.list(), stream_format_);
 }
 
 void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) {

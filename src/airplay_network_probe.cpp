@@ -187,6 +187,7 @@ bool play_probe_tone(
 
     const multiroom::PcmFormat format{44100, 2, 16};
     transport.open_stream(format);
+    transport.connect_selected_outputs();
 
     constexpr uint32_t frames_per_chunk = 352;
     const auto end = std::chrono::steady_clock::now() + options.duration;
@@ -205,10 +206,13 @@ bool play_probe_tone(
     }
 
     transport.flush();
-    print_session_summary(transport.sessions());
+    const auto sessions = transport.sessions();
+    print_session_summary(sessions);
     std::cout << "Sent " << chunks << " PCM chunk(s) to selected ready session(s).\n";
     transport.stop();
-    return !transport.queued_packets().empty() || chunks > 0;
+    return std::any_of(sessions.begin(), sessions.end(), [](const auto& session) {
+        return session.phase == multiroom::airplay::AirPlaySessionPhase::Ready && session.open;
+    });
 }
 
 }  // namespace

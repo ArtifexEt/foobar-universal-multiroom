@@ -25,6 +25,7 @@ public:
     void set_output_volume(const std::string& id, int volume) override;
     void set_output_offset_ms(const std::string& id, int offset_ms) override;
     void open_stream(const PcmFormat& format) override;
+    void connect_selected_outputs();
     void write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) override;
     void flush() override;
     void stop() override;

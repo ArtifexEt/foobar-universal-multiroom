@@ -131,6 +131,7 @@ bool exercise_partial_airplay_open_failure() {
     partial_transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7101));
     partial_engine.select_outputs({"living-room", "kitchen"});
     partial_engine.open_stream({48000, 2, 16});
+    partial_transport.connect_selected_outputs();
 
     const std::vector<int16_t> silence(480);
     partial_engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
@@ -167,10 +168,11 @@ bool exercise_partial_airplay_open_failure() {
     bool threw_all_failed = false;
     try {
         failing_engine.open_stream({48000, 2, 16});
+        failing_transport.connect_selected_outputs();
     } catch (const std::exception&) {
         threw_all_failed = true;
     }
-    ok &= expect(threw_all_failed, "opening should still fail when no selected output can be opened");
+    ok &= expect(threw_all_failed, "connecting should still fail when no selected output can be opened");
 
     return ok;
 }
@@ -264,6 +266,7 @@ int main() {
         engine.set_output_volume("living-room", 55);
         engine.set_output_offset_ms("kitchen", 12);
         engine.open_stream({48000, 2, 16});
+        transport.connect_selected_outputs();
         engine.set_output_volume("kitchen", 40);
 
         const std::vector<int16_t> silence(480);
