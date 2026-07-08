@@ -75,12 +75,16 @@ without changing the foobar UI.
 
 ## Build
 
-The CMake build covers the transport-neutral core and a small contract probe.
+The CMake build covers the transport-neutral core, a small contract probe, and
+an AirPlay network probe for local discovery/playback diagnostics.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
+
+.\build\Release\MultiroomAirPlayNetworkProbe.exe --timeout-ms 4000 --list-txt
+.\build\Release\MultiroomAirPlayNetworkProbe.exe --play --target first --duration-ms 5000 --require-speaker
 ```
 
 GitHub Actions also downloads the foobar2000 SDK, builds the component with

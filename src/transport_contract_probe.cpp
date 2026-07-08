@@ -175,6 +175,35 @@ bool exercise_partial_airplay_open_failure() {
     return ok;
 }
 
+bool exercise_no_selected_outputs_sink() {
+    bool ok = true;
+
+    auto control_client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
+    multiroom::airplay::AirPlayTransport transport(control_client);
+    multiroom::MultiroomEngine engine(transport);
+    engine.start_discovery();
+    transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7300));
+
+    engine.select_outputs({});
+    engine.open_stream({44100, 2, 16});
+
+    const std::vector<int16_t> silence(882);
+    const auto timestamp = engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+
+    ok &= expect(timestamp == 0, "no selected output sink should accept first write at stream frame 0");
+    ok &= expect(engine.current_frame() == 441, "no selected output sink should advance the stream clock");
+    ok &= expect(control_client->open_count() == 0, "no selected output sink should not open AirPlay sessions");
+    ok &= expect(control_client->audio_packet_count() == 0, "no selected output sink should not send RTP packets");
+    ok &= expect(transport.queued_packets().empty(), "no selected output sink should not queue packets");
+
+    engine.flush();
+    ok &= expect(engine.current_frame() == 0, "no selected output sink flush should reset the stream clock");
+    engine.stop();
+    ok &= expect(!engine.stream_open(), "no selected output sink stop should close the engine stream");
+
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -302,6 +331,7 @@ int main() {
         ok &= expect(!transport.stream_open(), "stop should close transport stream");
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");
         ok &= exercise_partial_airplay_open_failure();
+        ok &= exercise_no_selected_outputs_sink();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {

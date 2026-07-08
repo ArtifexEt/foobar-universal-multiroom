@@ -34,12 +34,19 @@ add_executable(MultiroomTransportContractProbe
     src/transport_contract_probe.cpp
 )
 
+add_executable(MultiroomAirPlayNetworkProbe
+    src/airplay_network_probe.cpp
+)
+
 target_compile_features(MultiroomTransportContractProbe PRIVATE cxx_std_20)
+target_compile_features(MultiroomAirPlayNetworkProbe PRIVATE cxx_std_20)
 target_link_libraries(MultiroomTransportContractProbe PRIVATE MultiroomCore)
+target_link_libraries(MultiroomAirPlayNetworkProbe PRIVATE MultiroomCore)
 
 if(MSVC)
     target_compile_options(MultiroomCore PRIVATE /W4 /permissive-)
     target_compile_options(MultiroomTransportContractProbe PRIVATE /W4 /permissive-)
+    target_compile_options(MultiroomAirPlayNetworkProbe PRIVATE /W4 /permissive-)
 endif()
 
 if(WIN32)

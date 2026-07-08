@@ -88,6 +88,7 @@ jobs:
           Copy-Item docs/ARCHITECTURE.md dist/
           Copy-Item docs/AIRPLAY_ENGINE.md dist/
           Copy-Item build/Release/MultiroomTransportContractProbe.exe dist/
+          Copy-Item build/Release/MultiroomAirPlayNetworkProbe.exe dist/
           Compress-Archive -Path dist/* -DestinationPath Foobar-Universal-Multiroom-windows-x64.zip -Force
 
       - name: Upload workflow artifact
