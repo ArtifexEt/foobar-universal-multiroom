@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <mutex>
 
 namespace {
 
@@ -48,6 +49,7 @@ public:
     }
 
     ~MultiroomOutput() {
+        stream_open_.store(false);
         try {
             MultiroomComponentState::instance().stop_playback();
         } catch (...) {
@@ -83,7 +85,7 @@ public:
 
     void volume_set(double value) override { volume_db_.store(value); }
 
-    bool is_progressing() override { return !paused_.load(); }
+    bool is_progressing() override { return stream_open_.load() && !paused_.load(); }
 
     pfc::eventHandle_t get_trigger_event() override { return wake_event_; }
 
@@ -92,6 +94,7 @@ private:
 
     void write(const audio_chunk& data) override {
         if (paused_.load() || data.is_empty()) {
+            SetEvent(wake_event_);
             return;
         }
 
@@ -110,19 +113,29 @@ private:
             append_le16(pcm_buffer_, sample_to_pcm16(static_cast<audio_sample>(input[i] * volume)));
         }
 
-        try {
-            MultiroomComponentState::instance().write_playback_pcm(pcm_buffer_.data(), pcm_buffer_.size());
-        } catch (const std::exception& e) {
-            throw_output_error(e);
+        {
+            std::lock_guard lock(write_mutex_);
+            if (!stream_open_.load()) {
+                SetEvent(wake_event_);
+                return;
+            }
+            try {
+                MultiroomComponentState::instance().write_playback_pcm(pcm_buffer_.data(), pcm_buffer_.size());
+            } catch (const std::exception& e) {
+                throw_output_error(e);
+            }
         }
         SetEvent(wake_event_);
     }
 
-    t_size can_write_samples() override { return kWritableFramesHint; }
+    t_size can_write_samples() override {
+        return stream_open_.load() && !paused_.load() ? kWritableFramesHint : 0;
+    }
 
     t_size get_latency_samples() override { return 0; }
 
     void on_flush() override {
+        std::lock_guard lock(write_mutex_);
         try {
             MultiroomComponentState::instance().flush_playback();
         } catch (const std::exception& e) {
@@ -138,6 +151,8 @@ private:
             throw exception_unexpected_audio_format_change();
         }
 
+        std::lock_guard lock(write_mutex_);
+        stream_open_.store(false);
         const multiroom::PcmFormat format{
             spec.sampleRate,
             spec.chanCount,
@@ -148,6 +163,7 @@ private:
         } catch (const std::exception& e) {
             throw_output_error(e);
         }
+        stream_open_.store(true);
         SetEvent(wake_event_);
     }
 
@@ -156,8 +172,10 @@ private:
     bool dither_ = false;
     t_uint32 bit_depth_ = 0;
     std::atomic<bool> paused_{false};
+    std::atomic<bool> stream_open_{false};
     std::atomic<double> volume_db_{0.0};
     std::vector<uint8_t> pcm_buffer_;
+    std::mutex write_mutex_;
     HANDLE wake_event_ = nullptr;
 };
 

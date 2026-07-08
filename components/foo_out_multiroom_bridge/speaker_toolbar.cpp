@@ -40,7 +40,7 @@ public:
     bool get_description(t_uint32 index, pfc::string_base& out) override {
         switch (index) {
         case cmd_airplay_speakers:
-            out = "Opens the Universal Multiroom AirPlay speaker picker.";
+            out = "Opens the Universal Multiroom AirPlay speaker picker; add this command to a toolbar for a compact speaker button.";
             return true;
         default:
             return false;

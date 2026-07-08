@@ -30,6 +30,8 @@ FONT 8, "MS Shell Dlg", 400, 0, 1
     LTEXT      "Port", IDC_STATIC, 386, 86, 28, 13
     EDITTEXT   idManualPort, 416, 84, 47, 14, ES_AUTOHSCROLL | ES_NUMBER
     PUSHBUTTON "Add speaker", idManualAddButton, 11, 109, 110, 14
+    LTEXT      "Speakers", IDC_STATIC, 11, 139, 95, 13
+    CONTROL    "", idSpeakerList, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 11, 156, 452, 112
 }
 
 IDD_MULTIROOM_PAGE_ABOUT DIALOGEX 0, 0, 480, 305

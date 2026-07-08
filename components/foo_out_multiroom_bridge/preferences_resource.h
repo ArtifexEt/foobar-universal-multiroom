@@ -14,3 +14,4 @@
 #define idManualHost              1008
 #define idManualPort              1009
 #define idManualAddButton         1010
+#define idSpeakerList             1011

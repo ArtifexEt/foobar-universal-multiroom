@@ -10,6 +10,7 @@
 #include <cwctype>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #ifndef WM_DPICHANGED_AFTERPARENT
 #define WM_DPICHANGED_AFTERPARENT 0x02E3
@@ -62,6 +63,23 @@ std::wstring widen(const char* text) {
     MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), required);
     result.resize(static_cast<size_t>(required - 1));
     return result;
+}
+
+std::wstring widen_utf8(const std::string& text) {
+    return widen(text.c_str());
+}
+
+std::wstring endpoint_text(const multiroom::OutputDevice& output) {
+    if (output.endpoint_host.empty() || output.endpoint_port == 0) return L"";
+    return widen_utf8(output.endpoint_host) + L":" + std::to_wstring(output.endpoint_port);
+}
+
+std::wstring speaker_state_text(const multiroom::OutputDevice& output) {
+    if (output.selected) return L"Selected";
+    if (output.supports_airplay2) return L"Available";
+    if (output.supports_legacy_l16) return L"Legacy";
+    if (output.requires_auth) return L"Auth required";
+    return L"Unsupported";
 }
 
 std::wstring text_from_item(HWND wnd, int id) {
@@ -152,7 +170,7 @@ private:
     LRESULT on_init_dialog_message(UINT, WPARAM, LPARAM, BOOL&) {
         INITCOMMONCONTROLSEX cc = {};
         cc.dwSize = sizeof(cc);
-        cc.dwICC = ICC_TAB_CLASSES | ICC_WIN95_CLASSES;
+        cc.dwICC = ICC_TAB_CLASSES | ICC_WIN95_CLASSES | ICC_LISTVIEW_CLASSES;
         InitCommonControlsEx(&cc);
 
         return on_init(m_hWnd);
@@ -245,6 +263,31 @@ private:
         if (port != nullptr && ::GetWindowTextLengthW(port) == 0) {
             ::SetWindowTextW(port, L"7000");
         }
+        configure_speaker_list();
+    }
+
+    void configure_speaker_list() {
+        HWND list = find_dlg_item(wnd_, idSpeakerList);
+        if (list == nullptr) return;
+
+        ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+
+        while (ListView_DeleteColumn(list, 0)) {
+        }
+
+        add_speaker_column(list, 0, L"Name", 156);
+        add_speaker_column(list, 1, L"State", 74);
+        add_speaker_column(list, 2, L"Endpoint", 110);
+        add_speaker_column(list, 3, L"Format", 92);
+    }
+
+    void add_speaker_column(HWND list, int index, const wchar_t* label, int width) {
+        LVCOLUMNW column = {};
+        column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        column.pszText = const_cast<wchar_t*>(label);
+        column.cx = width;
+        column.iSubItem = index;
+        ListView_InsertColumn(list, index, &column);
     }
 
     void position_pages() {
@@ -402,10 +445,37 @@ private:
 
     void update_status_page() {
         HWND summary = find_dlg_item(wnd_, idStatusSummary);
-        if (summary == nullptr) return;
-
         const auto status = MultiroomComponentState::instance().status_text();
-        ::SetWindowTextW(summary, status.c_str());
+        if (summary != nullptr) {
+            ::SetWindowTextW(summary, status.c_str());
+        }
+        update_speaker_list();
+    }
+
+    void update_speaker_list() {
+        HWND list = find_dlg_item(wnd_, idSpeakerList);
+        if (list == nullptr) return;
+
+        const auto outputs = MultiroomComponentState::instance().outputs();
+        ListView_DeleteAllItems(list);
+
+        for (int index = 0; index < static_cast<int>(outputs.size()); ++index) {
+            const auto& output = outputs[static_cast<size_t>(index)];
+            auto name = widen_utf8(output.name.empty() ? output.id : output.name);
+            auto state = speaker_state_text(output);
+            auto endpoint = endpoint_text(output);
+            auto format = widen_utf8(output.format);
+
+            LVITEMW item = {};
+            item.mask = LVIF_TEXT;
+            item.iItem = index;
+            item.iSubItem = 0;
+            item.pszText = name.data();
+            ListView_InsertItem(list, &item);
+            ListView_SetItemText(list, index, 1, state.data());
+            ListView_SetItemText(list, index, 2, endpoint.data());
+            ListView_SetItemText(list, index, 3, format.data());
+        }
     }
 
     preferences_page_callback::ptr callback_;

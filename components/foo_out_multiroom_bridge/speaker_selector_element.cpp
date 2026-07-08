@@ -507,7 +507,7 @@ public:
     }
 
     static void g_get_name(pfc::string_base& out) {
-        out = "Universal Multiroom Speaker Selector";
+        out = "AirPlay Speaker Selector Toolbar";
     }
 
     static ui_element_config::ptr g_get_default_configuration() {
@@ -515,7 +515,7 @@ public:
     }
 
     static const char* g_get_description() {
-        return "Dockable AirPlay-style speaker picker with per-speaker selection and volume.";
+        return "Compact AirPlay speaker picker intended for placement next to the seekbar or playback controls.";
     }
 
     ui_element_min_max_info get_min_max_info() override {
