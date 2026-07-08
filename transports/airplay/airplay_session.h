@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,7 @@ public:
 
     std::vector<AirPlaySessionState> sessions() const;
     std::vector<ScheduledPacket> queued_packets() const;
+    std::set<std::string> ready_output_ids() const;
 
 private:
     void close_control_session(AirPlaySessionState& session);

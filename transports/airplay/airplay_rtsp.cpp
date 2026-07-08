@@ -1043,8 +1043,8 @@ private:
         const auto* data_port = first.find("dataPort");
         const auto* control_port = first.find("controlPort");
         return {
-            data_port == nullptr ? 0 : static_cast<uint16_t>(data_port->asInt()),
-            control_port == nullptr ? 0 : static_cast<uint16_t>(control_port->asInt()),
+            data_port == nullptr ? uint16_t{} : static_cast<uint16_t>(data_port->asInt()),
+            control_port == nullptr ? uint16_t{} : static_cast<uint16_t>(control_port->asInt()),
         };
     }
 

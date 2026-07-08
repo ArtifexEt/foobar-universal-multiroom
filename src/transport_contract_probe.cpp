@@ -3,7 +3,10 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
@@ -42,6 +45,134 @@ void print_capabilities() {
                   << (capability.required ? " required" : " optional")
                   << '\n';
     }
+}
+
+multiroom::OutputDevice make_airplay_loopback_output(
+    std::string id,
+    std::string name,
+    uint16_t port) {
+    multiroom::OutputDevice output;
+    output.id = std::move(id);
+    output.name = std::move(name);
+    output.type = multiroom::OutputType::AirPlay;
+    output.supports_airplay2 = true;
+    output.requires_encrypted_stream = true;
+    output.volume = 50;
+    output.format = "airplay2-loopback";
+    output.supported_formats = {"airplay2"};
+    output.endpoint_host = "127.0.0.1";
+    output.endpoint_port = port;
+    return output;
+}
+
+class SelectiveFailingControlClient final : public multiroom::airplay::AirPlayControlClient {
+public:
+    explicit SelectiveFailingControlClient(std::set<std::string> failing_outputs)
+        : failing_outputs_(std::move(failing_outputs)) {}
+
+    multiroom::airplay::AirPlayNegotiatedSession open(
+        const multiroom::OutputDevice& output,
+        const multiroom::PcmFormat& format) override {
+        static_cast<void>(format);
+        ++open_count_;
+        if (failing_outputs_.find(output.id) != failing_outputs_.end()) {
+            throw std::runtime_error("simulated open failure");
+        }
+
+        multiroom::airplay::AirPlayNegotiatedSession session;
+        session.rtsp_session_id = "selective-" + output.id;
+        session.stream_uri = "rtsp://" + output.endpoint_host + "/" + output.id;
+        session.server_name = "selective-loopback";
+        session.supported_methods = {"OPTIONS", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
+        session.ports.local_data_port = 6100;
+        session.ports.local_control_port = 6101;
+        session.ports.local_timing_port = 6102;
+        session.ports.server_data_port = output.endpoint_port;
+        session.ports.server_control_port = static_cast<uint16_t>(output.endpoint_port + 1);
+        session.ports.server_timing_port = static_cast<uint16_t>(output.endpoint_port + 2);
+        return session;
+    }
+
+    void send_audio(
+        const std::string& output_id,
+        const std::string& rtsp_session_id,
+        const multiroom::ScheduledPacket& packet,
+        const void* frames,
+        size_t bytes) override {
+        static_cast<void>(rtsp_session_id);
+        static_cast<void>(packet);
+        if (frames == nullptr && bytes != 0) {
+            throw std::invalid_argument("Loopback audio frame buffer cannot be null when bytes are present.");
+        }
+        audio_output_ids_.push_back(output_id);
+    }
+
+    void set_volume(const std::string&, const std::string&, int) override {}
+    void flush(const std::string&, const std::string&) override {}
+    void close(const std::string&, const std::string&) override {}
+
+    size_t open_count() const { return open_count_; }
+    const std::vector<std::string>& audio_output_ids() const { return audio_output_ids_; }
+
+private:
+    std::set<std::string> failing_outputs_;
+    size_t open_count_ = 0;
+    std::vector<std::string> audio_output_ids_;
+};
+
+bool exercise_partial_airplay_open_failure() {
+    bool ok = true;
+
+    auto partial_client = std::make_shared<SelectiveFailingControlClient>(std::set<std::string>{"kitchen"});
+    multiroom::airplay::AirPlayTransport partial_transport(partial_client);
+    multiroom::MultiroomEngine partial_engine(partial_transport);
+    partial_engine.start_discovery();
+    partial_transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7100));
+    partial_transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7101));
+    partial_engine.select_outputs({"living-room", "kitchen"});
+    partial_engine.open_stream({48000, 2, 16});
+
+    const std::vector<int16_t> silence(480);
+    partial_engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+    const auto partial_sessions = partial_transport.sessions();
+    const auto partial_packets = partial_transport.queued_packets();
+
+    bool saw_ready_living_room = false;
+    bool saw_failed_kitchen = false;
+    for (const auto& session : partial_sessions) {
+        if (session.output_id == "living-room") {
+            saw_ready_living_room = session.phase == multiroom::airplay::AirPlaySessionPhase::Ready && session.open;
+        }
+        if (session.output_id == "kitchen") {
+            saw_failed_kitchen = session.phase == multiroom::airplay::AirPlaySessionPhase::Failed && !session.last_error.empty();
+        }
+    }
+
+    ok &= expect(partial_client->open_count() == 2, "partial open should attempt every selected output");
+    ok &= expect(saw_ready_living_room, "partial open should keep successful selected sessions ready");
+    ok &= expect(saw_failed_kitchen, "partial open should retain failed selected session diagnostics");
+    ok &= expect(partial_packets.size() == 1, "partial open should queue audio only for ready outputs");
+    ok &= expect(partial_client->audio_output_ids().size() == 1 &&
+                 partial_client->audio_output_ids().front() == "living-room",
+                 "partial open should send RTP only to ready sessions");
+
+    auto failing_client = std::make_shared<SelectiveFailingControlClient>(std::set<std::string>{"living-room", "kitchen"});
+    multiroom::airplay::AirPlayTransport failing_transport(failing_client);
+    multiroom::MultiroomEngine failing_engine(failing_transport);
+    failing_engine.start_discovery();
+    failing_transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7200));
+    failing_transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7201));
+    failing_engine.select_outputs({"living-room", "kitchen"});
+
+    bool threw_all_failed = false;
+    try {
+        failing_engine.open_stream({48000, 2, 16});
+    } catch (const std::exception&) {
+        threw_all_failed = true;
+    }
+    ok &= expect(threw_all_failed, "opening should still fail when no selected output can be opened");
+
+    return ok;
 }
 
 }  // namespace
@@ -170,6 +301,7 @@ int main() {
         ok &= expect(!engine.stream_open(), "stop should close engine stream");
         ok &= expect(!transport.stream_open(), "stop should close transport stream");
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");
+        ok &= exercise_partial_airplay_open_failure();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {
