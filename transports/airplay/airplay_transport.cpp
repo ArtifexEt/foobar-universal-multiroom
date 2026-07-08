@@ -1,5 +1,6 @@
 #include "airplay_transport.h"
 
+#include <algorithm>
 #include <chrono>
 #include <stdexcept>
 #include <utility>
@@ -70,8 +71,16 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         throw std::invalid_argument("Frame buffer cannot be null when bytes are present.");
     }
 
+    auto outputs = registry_.list();
+    const auto ready_ids = sessions_.ready_output_ids();
+    outputs.erase(
+        std::remove_if(outputs.begin(), outputs.end(), [&](const auto& output) {
+            return !output.selected || ready_ids.find(output.id) == ready_ids.end();
+        }),
+        outputs.end());
+
     const auto packets = scheduler_.schedule(
-        registry_.list(),
+        outputs,
         {stream_timestamp, bytes, stream_format_.sample_rate, 250});
     for (const auto& packet : packets) {
         sessions_.enqueue(packet, frames, bytes);

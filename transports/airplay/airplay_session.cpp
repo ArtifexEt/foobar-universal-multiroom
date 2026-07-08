@@ -3,6 +3,7 @@
 #include "airplay2_session.h"
 
 #include <cstdint>
+#include <sstream>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -68,10 +69,15 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
 
     std::lock_guard lock(mutex_);
 
+    size_t selected_count = 0;
+    size_t ready_count = 0;
+    std::vector<std::string> errors;
+
     for (const auto& output : outputs) {
         if (!output.selected) {
             continue;
         }
+        ++selected_count;
 
         auto& session = sessions_[output.id];
         const bool can_reuse_ready_session =
@@ -87,6 +93,7 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
             validate_output_for_stream(output);
             if (can_reuse_ready_session) {
                 session.last_error.clear();
+                ++ready_count;
                 continue;
             }
 
@@ -110,6 +117,7 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
             session.transport_ports = negotiated.ports;
             session.phase = AirPlaySessionPhase::Ready;
             session.open = true;
+            ++ready_count;
         } catch (const std::exception& e) {
             session.phase = AirPlaySessionPhase::Failed;
             session.open = false;
@@ -121,8 +129,17 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
             session.transport_ports = {};
             session.last_error = e.what();
             session.queued_packets.clear();
-            throw;
+            errors.push_back((output.name.empty() ? output.id : output.name) + ": " + e.what());
         }
+    }
+
+    if (selected_count != 0 && ready_count == 0 && !errors.empty()) {
+        std::ostringstream message;
+        message << "No selected AirPlay sessions could be opened.";
+        for (const auto& error : errors) {
+            message << " " << error;
+        }
+        throw std::runtime_error(message.str());
     }
 }
 
@@ -221,6 +238,18 @@ std::vector<ScheduledPacket> AirPlaySessionManager::queued_packets() const {
         result.insert(result.end(), session.queued_packets.begin(), session.queued_packets.end());
     }
 
+    return result;
+}
+
+std::set<std::string> AirPlaySessionManager::ready_output_ids() const {
+    std::lock_guard lock(mutex_);
+
+    std::set<std::string> result;
+    for (const auto& [id, session] : sessions_) {
+        if (session.phase == AirPlaySessionPhase::Ready && session.open) {
+            result.insert(id);
+        }
+    }
     return result;
 }
 

@@ -107,8 +107,9 @@ uint32_t read_u32(const std::vector<uint8_t>& packet, size_t offset) {
            static_cast<uint32_t>(packet[offset + 3]);
 }
 
-void append_dns_name(std::vector<uint8_t>& packet, const char* name) {
-    const char* label = name;
+void append_dns_name(std::vector<uint8_t>& packet, const std::string& name) {
+    const auto normalized_name = trim_trailing_dot(name);
+    const char* label = normalized_name.c_str();
     while (*label != '\0') {
         const char* dot = std::strchr(label, '.');
         const auto length = dot != nullptr ? static_cast<size_t>(dot - label) : std::strlen(label);
@@ -121,12 +122,12 @@ void append_dns_name(std::vector<uint8_t>& packet, const char* name) {
     packet.push_back(0);
 }
 
-std::vector<uint8_t> make_ptr_query(const char* service, bool request_unicast_response) {
+std::vector<uint8_t> make_dns_query(const std::string& name, uint16_t type, bool request_unicast_response) {
     std::vector<uint8_t> packet(12, 0);
     packet[5] = 1;
-    append_dns_name(packet, service);
-    packet.push_back(0);
-    packet.push_back(static_cast<uint8_t>(kDnsTypePtr));
+    append_dns_name(packet, name);
+    packet.push_back(static_cast<uint8_t>(type >> 8));
+    packet.push_back(static_cast<uint8_t>(type & 0xFF));
     const uint16_t question_class = request_unicast_response ? (kDnsClassIn | kDnsClassUnicastResponse) : kDnsClassIn;
     packet.push_back(static_cast<uint8_t>(question_class >> 8));
     packet.push_back(static_cast<uint8_t>(question_class & 0xFF));
@@ -792,6 +793,63 @@ void send_mdns_query(
     }
 }
 
+void receive_mdns_responses_until(
+    SOCKET socket_handle,
+    std::chrono::steady_clock::time_point deadline,
+    std::map<std::string, DiscoveredService>& services,
+    std::map<std::string, std::string>& host_addresses) {
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::array<uint8_t, 9000> buffer = {};
+        sockaddr_in from = {};
+        int from_len = sizeof(from);
+        const int received = recvfrom(
+            socket_handle,
+            reinterpret_cast<char*>(buffer.data()),
+            static_cast<int>(buffer.size()),
+            0,
+            reinterpret_cast<sockaddr*>(&from),
+            &from_len);
+        if (received == SOCKET_ERROR) {
+            const int error = WSAGetLastError();
+            if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) {
+                continue;
+            }
+            break;
+        }
+        if (received > 0) {
+            try {
+                parse_response(std::vector<uint8_t>(buffer.begin(), buffer.begin() + received), services, host_addresses);
+            } catch (const std::exception&) {
+            }
+        }
+    }
+}
+
+std::vector<std::string> discovered_service_names(const std::map<std::string, DiscoveredService>& services) {
+    std::set<std::string> names;
+    for (const auto& [key, service] : services) {
+        const auto full_name = trim_trailing_dot(service.full_name.empty() ? key : service.full_name);
+        if (!full_name.empty() &&
+            (ends_with_service(full_name, kAirPlayService) || ends_with_service(full_name, kRaopService))) {
+            names.insert(full_name);
+        }
+    }
+    return {names.begin(), names.end()};
+}
+
+std::vector<std::string> unresolved_host_names(
+    const std::map<std::string, DiscoveredService>& services,
+    const std::map<std::string, std::string>& host_addresses) {
+    std::set<std::string> names;
+    for (const auto& [_, service] : services) {
+        const auto host = trim_trailing_dot(service.target_host);
+        if (!host.empty() && host_addresses.find(lower_ascii(host)) == host_addresses.end()) {
+            names.insert(host);
+        }
+    }
+    return {names.begin(), names.end()};
+}
+
 std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
     WinsockSession winsock;
     const SOCKET socket_handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -803,8 +861,14 @@ std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
         closesocket(socket_handle);
     };
 
-    DWORD timeout_ms = static_cast<DWORD>(std::max<int64_t>(1, timeout.count()));
-    setsockopt(socket_handle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    auto receive_timeout_value = timeout.count() / 4;
+    if (receive_timeout_value < 25) {
+        receive_timeout_value = 25;
+    } else if (receive_timeout_value > 250) {
+        receive_timeout_value = 250;
+    }
+    DWORD receive_timeout_ms = static_cast<DWORD>(receive_timeout_value);
+    setsockopt(socket_handle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&receive_timeout_ms), sizeof(receive_timeout_ms));
     BOOL reuse_addr = TRUE;
     setsockopt(socket_handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse_addr), sizeof(reuse_addr));
     DWORD ttl = 255;
@@ -837,32 +901,31 @@ std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
         ntohs(local_addr.sin_port) != 5353;
 
     for (const auto* service : {kAirPlayService, kRaopService}) {
-        const auto query = make_ptr_query(service, request_unicast_response);
+        const auto query = make_dns_query(service, kDnsTypePtr, request_unicast_response);
         send_mdns_query(socket_handle, query, multicast, interfaces);
     }
 
     std::map<std::string, DiscoveredService> services;
     std::map<std::string, std::string> host_addresses;
     const auto start = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - start < timeout) {
-        std::array<uint8_t, 9000> buffer = {};
-        sockaddr_in from = {};
-        int from_len = sizeof(from);
-        const int received = recvfrom(
-            socket_handle,
-            reinterpret_cast<char*>(buffer.data()),
-            static_cast<int>(buffer.size()),
-            0,
-            reinterpret_cast<sockaddr*>(&from),
-            &from_len);
-        if (received == SOCKET_ERROR) break;
-        if (received > 0) {
-            try {
-                parse_response(std::vector<uint8_t>(buffer.begin(), buffer.begin() + received), services, host_addresses);
-            } catch (const std::exception&) {
-            }
-        }
+    const auto deadline = start + timeout;
+    const auto phase = (std::max)(std::chrono::milliseconds(150), timeout / 3);
+
+    receive_mdns_responses_until(socket_handle, (std::min)(start + phase, deadline), services, host_addresses);
+
+    for (const auto& service_name : discovered_service_names(services)) {
+        send_mdns_query(socket_handle, make_dns_query(service_name, kDnsTypeSrv, request_unicast_response), multicast, interfaces);
+        send_mdns_query(socket_handle, make_dns_query(service_name, kDnsTypeTxt, request_unicast_response), multicast, interfaces);
     }
+
+    receive_mdns_responses_until(socket_handle, (std::min)(start + (phase * 2), deadline), services, host_addresses);
+
+    for (const auto& host_name : unresolved_host_names(services, host_addresses)) {
+        send_mdns_query(socket_handle, make_dns_query(host_name, kDnsTypeA, request_unicast_response), multicast, interfaces);
+        send_mdns_query(socket_handle, make_dns_query(host_name, kDnsTypeAaaa, request_unicast_response), multicast, interfaces);
+    }
+
+    receive_mdns_responses_until(socket_handle, deadline, services, host_addresses);
 
     close_socket();
 
