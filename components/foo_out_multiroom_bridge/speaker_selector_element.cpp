@@ -5,6 +5,8 @@
 #include <commctrl.h>
 #include <libPPUI/win32_op.h>
 
+#include <sstream>
+
 namespace {
 
 static constexpr GUID guid_speaker_selector_element = {
@@ -14,10 +16,11 @@ static constexpr UINT_PTR kSpeakerVolumeBase = 31000;
 static constexpr UINT_PTR kRefreshCommand = 32000;
 static constexpr UINT_PTR kEmptyStatusId = 32001;
 static constexpr UINT_PTR kVolumeLabelBase = 33000;
-static constexpr int kPopupWidth = 340;
+static constexpr UINT_PTR kRefreshTimer = 34000;
+static constexpr int kPopupWidth = 372;
 static constexpr int kPopupPadding = 12;
 static constexpr int kHeaderHeight = 34;
-static constexpr int kRowHeight = 58;
+static constexpr int kRowHeight = 62;
 static constexpr int kFooterHeight = 42;
 static constexpr int kToolbarHeight = 28;
 
@@ -34,6 +37,20 @@ std::wstring widen_utf8(const std::string& text) {
 
 std::wstring volume_label(int volume) {
     return std::to_wstring(volume) + L"%";
+}
+
+std::string outputs_signature(const std::vector<multiroom::OutputDevice>& outputs) {
+    std::ostringstream stream;
+    for (const auto& output : outputs) {
+        stream << output.id << '|'
+               << output.name << '|'
+               << output.selected << '|'
+               << output.volume << '|'
+               << output.endpoint_host << '|'
+               << output.endpoint_port << '|'
+               << output.format << ';';
+    }
+    return stream.str();
 }
 
 bool output_playable(const multiroom::OutputDevice& output) {
@@ -73,6 +90,8 @@ public:
     void open_below(HWND anchor) {
         MultiroomComponentState::instance().refresh_outputs();
         outputs_ = MultiroomComponentState::instance().outputs();
+        status_ = MultiroomComponentState::instance().status_text();
+        outputs_signature_ = outputs_signature(outputs_);
 
         INITCOMMONCONTROLSEX cc = {};
         cc.dwSize = sizeof(cc);
@@ -98,6 +117,7 @@ public:
             nullptr,
             WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST) != nullptr);
+        SetTimer(kRefreshTimer, 250);
         ShowWindow(SW_SHOW);
         SetFocus();
     }
@@ -108,6 +128,7 @@ public:
         MSG_WM_PAINT(on_paint)
         MESSAGE_HANDLER(WM_COMMAND, on_command)
         MESSAGE_HANDLER(WM_HSCROLL, on_scroll)
+        MESSAGE_HANDLER(WM_TIMER, on_timer)
         MESSAGE_HANDLER(WM_ACTIVATE, on_activate)
         MESSAGE_HANDLER(WM_KEYDOWN, on_key_down)
     END_MSG_MAP()
@@ -173,10 +194,13 @@ private:
         if (id == kRefreshCommand && code == BN_CLICKED) {
             MultiroomComponentState::instance().refresh_outputs();
             outputs_ = MultiroomComponentState::instance().outputs();
+            status_ = MultiroomComponentState::instance().status_text();
+            outputs_signature_ = outputs_signature(outputs_);
             rebuild_controls();
             resize_to_content();
             Invalidate();
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+            SetTimer(kRefreshTimer, 250);
             return 0;
         }
 
@@ -190,6 +214,28 @@ private:
             return 0;
         }
 
+        return 0;
+    }
+
+    LRESULT on_timer(UINT, WPARAM wp, LPARAM, BOOL&) {
+        if (wp != kRefreshTimer) return 0;
+
+        const auto outputs = MultiroomComponentState::instance().outputs();
+        const auto status = MultiroomComponentState::instance().status_text();
+        const auto signature = outputs_signature(outputs);
+        if (signature != outputs_signature_ || status != status_) {
+            outputs_ = outputs;
+            status_ = status;
+            outputs_signature_ = signature;
+            rebuild_controls();
+            resize_to_content();
+            Invalidate();
+            if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+        }
+
+        if (!MultiroomComponentState::instance().refresh_in_progress()) {
+            KillTimer(kRefreshTimer);
+        }
         return 0;
     }
 
@@ -242,11 +288,10 @@ private:
         volume_labels_.clear();
 
         if (outputs_.empty()) {
-            const auto status = MultiroomComponentState::instance().status_text();
             add_control(::CreateWindowExW(
                 0,
                 L"STATIC",
-                status.empty() ? L"No AirPlay speakers found" : status.c_str(),
+                status_.empty() ? L"No AirPlay speakers found" : status_.c_str(),
                 WS_CHILD | WS_VISIBLE | SS_CENTER | SS_EDITCONTROL,
                 kPopupPadding,
                 kHeaderHeight + 12,
@@ -293,7 +338,7 @@ private:
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | (playable ? 0 : WS_DISABLED),
             kPopupPadding + 12,
             row_top + 4,
-            kPopupWidth - 112,
+            kPopupWidth - 128,
             22,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerCheckBase + index),
@@ -307,7 +352,7 @@ private:
             WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | (playable ? 0 : WS_DISABLED),
             kPopupPadding + 30,
             row_top + 28,
-            kPopupWidth - 160,
+            kPopupWidth - 176,
             24,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerVolumeBase + index),
@@ -319,9 +364,9 @@ private:
             L"STATIC",
             L"",
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
-            kPopupWidth - kPopupPadding - 96,
+            kPopupWidth - kPopupPadding - 104,
             row_top + 30,
-            84,
+            92,
             20,
             m_hWnd,
             reinterpret_cast<HMENU>(kVolumeLabelBase + index),
@@ -421,6 +466,8 @@ private:
     HWND owner_ = nullptr;
     ui_element_instance_callback_ptr callback_;
     std::vector<multiroom::OutputDevice> outputs_;
+    std::wstring status_;
+    std::string outputs_signature_;
     std::vector<HWND> controls_;
     std::vector<HWND> volume_labels_;
 };

@@ -58,7 +58,6 @@ public:
     void execute(t_uint32 index, service_ptr_t<service_base>) override {
         switch (index) {
         case cmd_airplay_speakers:
-            MultiroomComponentState::instance().refresh_outputs();
             show_multiroom_speaker_picker(core_api::get_main_window(), nullptr);
             break;
         default:

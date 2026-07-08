@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <utility>
 
 namespace {
 
@@ -32,37 +33,116 @@ MultiroomComponentState& MultiroomComponentState::instance() {
     return state;
 }
 
+MultiroomComponentState::~MultiroomComponentState() {
+    if (refresh_thread_.joinable()) {
+        refresh_thread_.join();
+    }
+}
+
 void MultiroomComponentState::ensure_discovery_started() {
-    if (discovery_started_) return;
-    transport_.start_discovery();
-    discovery_started_ = true;
+    std::lock_guard transport_lock(transport_mutex_);
+
+    bool should_start = false;
+    {
+        std::lock_guard lock(mutex_);
+        if (!discovery_started_) {
+            discovery_started_ = true;
+            should_start = true;
+        }
+    }
+
+    if (should_start) {
+        transport_.start_discovery();
+    }
 }
 
 void MultiroomComponentState::refresh_outputs() {
-    std::lock_guard lock(mutex_);
-    try {
-        ensure_discovery_started();
-        cached_outputs_ = transport_.list_outputs();
-        ++refresh_count_;
-        last_error_.clear();
-        FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery refresh #" << refresh_count_
-                                  << ": " << cached_outputs_.size() << " device(s)";
-        for (const auto& output : cached_outputs_) {
-            FB2K_console_formatter() << "[Universal Multiroom] AirPlay device: "
-                                      << output.name.c_str()
-                                      << " id=" << output.id.c_str()
-                                      << " endpoint=" << output.endpoint_host.c_str()
-                                      << ":" << output.endpoint_port
-                                      << " airplay2=" << (output.supports_airplay2 ? "yes" : "no")
-                                      << " legacy=" << (output.supports_legacy_l16 ? "yes" : "no")
-                                      << " auth=" << (output.requires_auth ? "yes" : "no")
-                                      << " format=" << output.format.c_str();
+    ensure_discovery_started();
+
+    {
+        std::lock_guard lock(mutex_);
+        if (refresh_in_progress_) {
+            refresh_requested_ = true;
+            return;
         }
-    } catch (const std::exception& e) {
-        ++refresh_count_;
-        last_error_ = widen_utf8(e.what());
-        FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery failed: " << e.what();
+        refresh_in_progress_ = true;
+        refresh_requested_ = false;
     }
+
+    if (refresh_thread_.joinable()) {
+        refresh_thread_.join();
+    }
+    refresh_thread_ = std::thread(&MultiroomComponentState::refresh_outputs_worker, this);
+}
+
+void MultiroomComponentState::refresh_outputs_worker() {
+    for (;;) {
+        std::vector<multiroom::OutputDevice> refreshed_outputs;
+        std::wstring refresh_error;
+        std::string refresh_error_narrow;
+        bool refresh_ok = false;
+
+        try {
+            std::lock_guard transport_lock(transport_mutex_);
+            transport_.refresh_discovery();
+            refreshed_outputs = transport_.list_outputs();
+            refresh_ok = true;
+        } catch (const std::exception& e) {
+            refresh_error_narrow = e.what();
+            refresh_error = widen_utf8(e.what());
+        }
+
+        size_t refresh_number = 0;
+        {
+            std::lock_guard lock(mutex_);
+            ++refresh_count_;
+            refresh_number = refresh_count_;
+            if (refresh_ok) {
+                cached_outputs_ = refreshed_outputs;
+                last_error_.clear();
+            } else {
+                last_error_ = std::move(refresh_error);
+            }
+        }
+
+        if (refresh_ok) {
+            FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery refresh #" << refresh_number
+                                      << ": " << refreshed_outputs.size() << " device(s)";
+            for (const auto& output : refreshed_outputs) {
+                FB2K_console_formatter() << "[Universal Multiroom] AirPlay device: "
+                                          << output.name.c_str()
+                                          << " id=" << output.id.c_str()
+                                          << " endpoint=" << output.endpoint_host.c_str()
+                                          << ":" << output.endpoint_port
+                                          << " airplay2=" << (output.supports_airplay2 ? "yes" : "no")
+                                          << " legacy=" << (output.supports_legacy_l16 ? "yes" : "no")
+                                          << " auth=" << (output.requires_auth ? "yes" : "no")
+                                          << " format=" << output.format.c_str();
+            }
+        } else {
+            FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery failed: " << refresh_error_narrow.c_str();
+        }
+
+        bool run_again = false;
+        {
+            std::lock_guard lock(mutex_);
+            if (refresh_requested_) {
+                refresh_requested_ = false;
+                run_again = true;
+            } else {
+                refresh_in_progress_ = false;
+            }
+        }
+
+        if (!run_again) {
+            return;
+        }
+    }
+}
+
+bool MultiroomComponentState::refresh_in_progress() {
+    std::lock_guard lock(mutex_);
+    return refresh_in_progress_;
 }
 
 std::vector<multiroom::OutputDevice> MultiroomComponentState::outputs() {
@@ -71,15 +151,20 @@ std::vector<multiroom::OutputDevice> MultiroomComponentState::outputs() {
 }
 
 void MultiroomComponentState::toggle_output(const std::string& id) {
-    std::lock_guard lock(mutex_);
     try {
         ensure_discovery_started();
-        auto selected = selected_ids(cached_outputs_);
+        std::vector<multiroom::OutputDevice> outputs_snapshot;
+        {
+            std::lock_guard lock(mutex_);
+            outputs_snapshot = cached_outputs_;
+        }
 
-        const auto output_it = std::find_if(cached_outputs_.begin(), cached_outputs_.end(), [&](const auto& output) {
+        auto selected = selected_ids(outputs_snapshot);
+
+        const auto output_it = std::find_if(outputs_snapshot.begin(), outputs_snapshot.end(), [&](const auto& output) {
             return output.id == id;
         });
-        if (output_it != cached_outputs_.end() && !output_it->supports_airplay2) {
+        if (output_it != outputs_snapshot.end() && !output_it->supports_airplay2) {
             throw std::runtime_error("AirPlay 2 is required for the multiroom MVP: " + id);
         }
 
@@ -90,85 +175,116 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
             selected.erase(it);
         }
 
-        transport_.set_enabled_outputs(selected);
-        cached_outputs_ = transport_.list_outputs();
-        last_error_.clear();
+        {
+            std::lock_guard transport_lock(transport_mutex_);
+            transport_.set_enabled_outputs(selected);
+            outputs_snapshot = transport_.list_outputs();
+        }
+        {
+            std::lock_guard lock(mutex_);
+            cached_outputs_ = std::move(outputs_snapshot);
+            last_error_.clear();
+        }
     } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
     }
 }
 
 void MultiroomComponentState::set_output_volume(const std::string& id, int volume) {
-    std::lock_guard lock(mutex_);
     try {
         ensure_discovery_started();
-        transport_.set_output_volume(id, volume);
-        for (auto& output : cached_outputs_) {
+        std::vector<multiroom::OutputDevice> outputs_snapshot;
+        {
+            std::lock_guard transport_lock(transport_mutex_);
+            transport_.set_output_volume(id, volume);
+            outputs_snapshot = transport_.list_outputs();
+        }
+        for (auto& output : outputs_snapshot) {
             if (output.id == id) {
                 output.volume = std::clamp(volume, 0, 100);
                 break;
             }
         }
-        last_error_.clear();
+        {
+            std::lock_guard lock(mutex_);
+            cached_outputs_ = std::move(outputs_snapshot);
+            last_error_.clear();
+        }
     } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
     }
 }
 
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
-    std::lock_guard lock(mutex_);
     try {
         ensure_discovery_started();
+        std::lock_guard transport_lock(transport_mutex_);
         if (!playback_engine_) {
             playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
         }
         playback_engine_->open_stream(format);
         playback_open_ = true;
+        std::lock_guard lock(mutex_);
         last_error_.clear();
     } catch (const std::exception& e) {
-        playback_open_ = false;
+        {
+            std::lock_guard transport_lock(transport_mutex_);
+            playback_open_ = false;
+        }
+        std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
         throw;
     }
 }
 
 void MultiroomComponentState::write_playback_pcm(const void* frames, size_t bytes) {
-    std::lock_guard lock(mutex_);
     try {
+        std::lock_guard transport_lock(transport_mutex_);
         if (!playback_engine_ || !playback_open_) {
             throw std::logic_error("Multiroom playback stream is not open.");
         }
         playback_engine_->write_interleaved_pcm(frames, bytes);
+        std::lock_guard lock(mutex_);
         last_error_.clear();
     } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
         throw;
     }
 }
 
 void MultiroomComponentState::flush_playback() {
-    std::lock_guard lock(mutex_);
     try {
+        std::lock_guard transport_lock(transport_mutex_);
         if (playback_engine_ && playback_open_) {
             playback_engine_->flush();
         }
+        std::lock_guard lock(mutex_);
         last_error_.clear();
     } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
         throw;
     }
 }
 
 void MultiroomComponentState::stop_playback() {
-    std::lock_guard lock(mutex_);
     try {
+        std::lock_guard transport_lock(transport_mutex_);
         if (playback_engine_ && playback_open_) {
             playback_engine_->stop();
         }
         playback_open_ = false;
+        std::lock_guard lock(mutex_);
         last_error_.clear();
     } catch (const std::exception& e) {
-        playback_open_ = false;
+        {
+            std::lock_guard transport_lock(transport_mutex_);
+            playback_open_ = false;
+        }
+        std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
         throw;
     }
@@ -194,6 +310,14 @@ std::wstring MultiroomComponentState::status_text() {
     std::lock_guard lock(mutex_);
     if (!last_error_.empty()) return L"AirPlay discovery error: " + last_error_;
     if (!discovery_started_) return L"AirPlay discovery: not started";
+    if (refresh_in_progress_) {
+        std::wstringstream stream;
+        stream << L"AirPlay discovery: scanning";
+        if (!cached_outputs_.empty()) {
+            stream << L", " << cached_outputs_.size() << L" cached";
+        }
+        return stream.str();
+    }
 
     size_t selected = 0;
     for (const auto& output : cached_outputs_) {

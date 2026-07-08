@@ -20,10 +20,14 @@ void AirPlayTransport::stop_discovery() {
     discovery_active_ = false;
 }
 
-std::vector<OutputDevice> AirPlayTransport::list_outputs() {
+void AirPlayTransport::refresh_discovery(std::chrono::milliseconds timeout) {
     if (discovery_active_) {
-        discovery_.refresh(std::chrono::milliseconds(1500));
+        discovery_.refresh(timeout);
     }
+    sync_discovered_outputs();
+}
+
+std::vector<OutputDevice> AirPlayTransport::list_outputs() {
     sync_discovered_outputs();
     return registry_.list();
 }

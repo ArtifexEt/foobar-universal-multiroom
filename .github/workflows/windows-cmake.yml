@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - feature/**
+      - codex/**
   pull_request:
     branches:
       - main
