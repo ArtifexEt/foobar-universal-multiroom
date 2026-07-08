@@ -7,6 +7,7 @@
 #include "core/packet_scheduler.h"
 #include "transport.h"
 
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -18,6 +19,7 @@ public:
 
     void start_discovery() override;
     void stop_discovery() override;
+    void refresh_discovery(std::chrono::milliseconds timeout = std::chrono::milliseconds(1500));
     std::vector<OutputDevice> list_outputs() override;
     void set_enabled_outputs(const std::vector<std::string>& ids) override;
     void set_output_volume(const std::string& id, int volume) override;

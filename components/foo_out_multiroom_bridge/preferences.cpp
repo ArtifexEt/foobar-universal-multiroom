@@ -16,6 +16,7 @@ static constexpr GUID guid_preferences = {
 static constexpr COLORREF kDarkBackground = RGB(32, 32, 32);
 static constexpr COLORREF kDarkEditBackground = RGB(24, 24, 24);
 static constexpr COLORREF kDarkText = RGB(232, 232, 232);
+static constexpr UINT_PTR kStatusRefreshTimer = 42000;
 
 enum class Page {
     Status = 0,
@@ -57,6 +58,7 @@ public:
         MESSAGE_HANDLER(WM_INITDIALOG, on_init_dialog_message)
         MESSAGE_HANDLER(WM_ERASEBKGND, on_erase_message)
         MESSAGE_HANDLER(WM_COMMAND, on_command_message)
+        MESSAGE_HANDLER(WM_TIMER, on_timer_message)
         MESSAGE_HANDLER(WM_SIZE, on_size_message)
         MESSAGE_HANDLER(WM_DPICHANGED, on_dpi_changed_message)
         MESSAGE_HANDLER(WM_DPICHANGED_AFTERPARENT, on_dpi_changed_message)
@@ -88,6 +90,7 @@ private:
 
     LRESULT on_erase_message(UINT, WPARAM wp, LPARAM, BOOL&) { return on_erase(m_hWnd, reinterpret_cast<HDC>(wp)); }
     LRESULT on_command_message(UINT, WPARAM wp, LPARAM, BOOL&) { return on_command(wp); }
+    LRESULT on_timer_message(UINT, WPARAM wp, LPARAM, BOOL&) { return on_timer(wp); }
     LRESULT on_size_message(UINT, WPARAM, LPARAM, BOOL&) { position_pages(); return TRUE; }
     LRESULT on_dpi_changed_message(UINT, WPARAM, LPARAM, BOOL&) { position_pages(); return TRUE; }
     LRESULT on_theme_changed_message(UINT, WPARAM, LPARAM, BOOL&) { redraw(); return TRUE; }
@@ -214,10 +217,21 @@ private:
         if (id == idRefreshButton) {
             MultiroomComponentState::instance().refresh_outputs();
             update_status_page();
+            ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
             return TRUE;
         }
 
         return FALSE;
+    }
+
+    INT_PTR on_timer(WPARAM wp) {
+        if (wp != kStatusRefreshTimer) return FALSE;
+
+        update_status_page();
+        if (!MultiroomComponentState::instance().refresh_in_progress()) {
+            ::KillTimer(wnd_, kStatusRefreshTimer);
+        }
+        return TRUE;
     }
 
     INT_PTR on_notify(NMHDR* header) {

@@ -56,6 +56,12 @@ bool ends_with_service(const std::string& name, const char* service) {
            lowered_name[lowered_name.size() - lowered_service.size() - 1] == '.';
 }
 
+std::string infer_service_type(const std::string& full_name) {
+    if (ends_with_service(full_name, kAirPlayService)) return kAirPlayService;
+    if (ends_with_service(full_name, kRaopService)) return kRaopService;
+    return {};
+}
+
 std::string service_instance_name(const std::string& full_name, const std::string& service_type) {
     const auto normalized_name = trim_trailing_dot(full_name);
     if (normalized_name.size() > service_type.size() + 1 &&
@@ -68,6 +74,24 @@ std::string service_instance_name(const std::string& full_name, const std::strin
         return instance;
     }
     return normalized_name;
+}
+
+std::string service_instance_prefix(const std::string& full_name, const std::string& service_type) {
+    const auto normalized_name = trim_trailing_dot(full_name);
+    if (!service_type.empty() &&
+        normalized_name.size() > service_type.size() + 1 &&
+        lower_ascii(normalized_name).compare(normalized_name.size() - service_type.size(), service_type.size(), lower_ascii(service_type)) == 0) {
+        return normalized_name.substr(0, normalized_name.size() - service_type.size() - 1);
+    }
+    return normalized_name;
+}
+
+std::string normalize_hardware_id(std::string value) {
+    value = lower_ascii(std::move(value));
+    value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char c) {
+        return c == ':' || c == '-' || std::isspace(c) != 0;
+    }), value.end());
+    return value;
 }
 
 uint16_t read_u16(const std::vector<uint8_t>& packet, size_t offset) {
@@ -354,26 +378,50 @@ bool supports_airplay2_audio(const std::map<std::string, std::string>& txt) {
     return has_airplay2_encryption || has_airplay_features;
 }
 
+void normalize_service(DiscoveredService& service) {
+    service.full_name = trim_trailing_dot(service.full_name);
+    service.service_type = trim_trailing_dot(service.service_type);
+    service.target_host = trim_trailing_dot(service.target_host);
+
+    if (service.service_type.empty()) {
+        service.service_type = infer_service_type(service.full_name);
+    }
+    if (service.instance_name.empty() && !service.service_type.empty()) {
+        service.instance_name = service_instance_name(service.full_name, service.service_type);
+    }
+}
+
 std::string device_id_from(const DiscoveredService& service) {
     auto id = txt_value(service.txt, "deviceid");
+    if (!id.empty()) id = normalize_hardware_id(std::move(id));
     if (id.empty()) id = txt_value(service.txt, "pk");
+    if (id.empty()) {
+        auto instance = service_instance_prefix(service.full_name, service.service_type);
+        const auto at = instance.find('@');
+        if (at != std::string::npos && at > 0) {
+            id = normalize_hardware_id(instance.substr(0, at));
+        }
+    }
     if (id.empty()) id = service.full_name;
     return "airplay:" + lower_ascii(id);
 }
 
 OutputDevice to_output_device(const DiscoveredService& service) {
+    auto normalized_service = service;
+    normalize_service(normalized_service);
+
     OutputDevice device;
-    device.id = device_id_from(service);
-    device.name = service.instance_name.empty() ? service.full_name : service.instance_name;
+    device.id = device_id_from(normalized_service);
+    device.name = normalized_service.instance_name.empty() ? normalized_service.full_name : normalized_service.instance_name;
     device.type = OutputType::AirPlay;
-    device.has_password = truthy_txt(service.txt, "pw");
-    const bool unencrypted_audio = supports_unencrypted_audio(service.txt);
-    device.supports_legacy_l16 = unencrypted_audio && supports_mvp_l16_audio(service.txt);
-    device.supports_airplay2 = supports_airplay2_audio(service.txt);
+    device.has_password = truthy_txt(normalized_service.txt, "pw");
+    const bool unencrypted_audio = supports_unencrypted_audio(normalized_service.txt);
+    device.supports_legacy_l16 = unencrypted_audio && supports_mvp_l16_audio(normalized_service.txt);
+    device.supports_airplay2 = supports_airplay2_audio(normalized_service.txt);
     device.requires_encrypted_stream = !unencrypted_audio || device.supports_airplay2;
     device.requires_auth = device.has_password ||
-                           truthy_txt(service.txt, "da") ||
-                           truthy_txt(service.txt, "requiresauth") ||
+                           truthy_txt(normalized_service.txt, "da") ||
+                           truthy_txt(normalized_service.txt, "requiresauth") ||
                            device.requires_encrypted_stream;
     device.needs_auth_key = device.requires_encrypted_stream;
     device.volume = 50;
@@ -387,9 +435,9 @@ OutputDevice to_output_device(const DiscoveredService& service) {
         device.format = device.requires_auth ? "airplay-auth-required" : "airplay-unsupported-format";
         device.supported_formats = {device.format};
     }
-    device.endpoint_host = service.target_address.empty() ? service.target_host : service.target_address;
-    device.endpoint_port = service.port;
-    device.txt_records = service.txt;
+    device.endpoint_host = normalized_service.target_address.empty() ? normalized_service.target_host : normalized_service.target_address;
+    device.endpoint_port = normalized_service.port;
+    device.txt_records = normalized_service.txt;
     return device;
 }
 
@@ -451,6 +499,54 @@ std::string ipv4_address_from_dns_service(const IP4_ADDRESS* address) {
     in_addr ipv4 = {};
     ipv4.S_un.S_addr = *address;
     return inet_ntop(AF_INET, &ipv4, text, sizeof(text)) == nullptr ? std::string{} : std::string{text};
+}
+
+void merge_device(OutputDevice& target, const OutputDevice& candidate) {
+    if (target.name.empty()) {
+        target.name = candidate.name;
+    }
+    if (target.endpoint_host.empty() && !candidate.endpoint_host.empty()) {
+        target.endpoint_host = candidate.endpoint_host;
+    }
+    if (target.endpoint_port == 0 && candidate.endpoint_port != 0) {
+        target.endpoint_port = candidate.endpoint_port;
+    }
+
+    target.has_password = target.has_password || candidate.has_password;
+    target.requires_auth = target.requires_auth || candidate.requires_auth;
+    target.needs_auth_key = target.needs_auth_key || candidate.needs_auth_key;
+    target.supports_airplay2 = target.supports_airplay2 || candidate.supports_airplay2;
+    target.supports_legacy_l16 = target.supports_legacy_l16 || candidate.supports_legacy_l16;
+    target.requires_encrypted_stream = target.requires_encrypted_stream || candidate.requires_encrypted_stream;
+
+    for (const auto& format : candidate.supported_formats) {
+        if (std::find(target.supported_formats.begin(), target.supported_formats.end(), format) == target.supported_formats.end()) {
+            target.supported_formats.push_back(format);
+        }
+    }
+    for (const auto& [key, value] : candidate.txt_records) {
+        target.txt_records.try_emplace(key, value);
+    }
+
+    if (target.supports_airplay2) {
+        target.format = "airplay2";
+    } else if (target.supports_legacy_l16) {
+        target.format = "airplay-legacy-l16";
+    } else if (target.format.empty()) {
+        target.format = candidate.format;
+    }
+}
+
+void append_or_merge_device(std::vector<OutputDevice>& devices, OutputDevice candidate) {
+    const auto it = std::find_if(devices.begin(), devices.end(), [&](const auto& device) {
+        return device.id == candidate.id;
+    });
+    if (it == devices.end()) {
+        devices.push_back(std::move(candidate));
+        return;
+    }
+
+    merge_device(*it, candidate);
 }
 
 struct BrowseContext {
@@ -592,13 +688,13 @@ std::vector<OutputDevice> browse_windows_dns_sd(std::chrono::milliseconds timeou
             if (!resolved) continue;
 
             resolved->service_type = service_type;
-            if (resolved->instance_name.empty()) {
-                resolved->instance_name = service_instance_name(resolved->full_name, service_type);
-            }
+            normalize_service(*resolved);
 
             auto device = to_output_device(*resolved);
             if (seen_ids.insert(device.id).second) {
                 devices.push_back(std::move(device));
+            } else {
+                append_or_merge_device(devices, std::move(device));
             }
         }
     }
@@ -670,6 +766,32 @@ void join_mdns_multicast(SOCKET socket_handle) {
     }
 }
 
+void send_mdns_query(
+    SOCKET socket_handle,
+    const std::vector<uint8_t>& query,
+    const sockaddr_in& multicast,
+    const std::vector<in_addr>& interfaces) {
+    if (interfaces.empty()) {
+        sendto(socket_handle,
+               reinterpret_cast<const char*>(query.data()),
+               static_cast<int>(query.size()),
+               0,
+               reinterpret_cast<const sockaddr*>(&multicast),
+               sizeof(multicast));
+        return;
+    }
+
+    for (const auto& interface_address : interfaces) {
+        setsockopt(socket_handle, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&interface_address), sizeof(interface_address));
+        sendto(socket_handle,
+               reinterpret_cast<const char*>(query.data()),
+               static_cast<int>(query.size()),
+               0,
+               reinterpret_cast<const sockaddr*>(&multicast),
+               sizeof(multicast));
+    }
+}
+
 std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
     WinsockSession winsock;
     const SOCKET socket_handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -706,6 +828,7 @@ std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
     multicast.sin_family = AF_INET;
     multicast.sin_port = htons(5353);
     inet_pton(AF_INET, "224.0.0.251", &multicast.sin_addr);
+    const auto interfaces = local_ipv4_interfaces();
 
     sockaddr_in local_addr = {};
     int local_addr_len = sizeof(local_addr);
@@ -715,12 +838,7 @@ std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
 
     for (const auto* service : {kAirPlayService, kRaopService}) {
         const auto query = make_ptr_query(service, request_unicast_response);
-        sendto(socket_handle,
-               reinterpret_cast<const char*>(query.data()),
-               static_cast<int>(query.size()),
-               0,
-               reinterpret_cast<sockaddr*>(&multicast),
-               sizeof(multicast));
+        send_mdns_query(socket_handle, query, multicast, interfaces);
     }
 
     std::map<std::string, DiscoveredService> services;
@@ -750,14 +868,16 @@ std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
 
     std::vector<OutputDevice> devices;
     for (const auto& [_, service] : services) {
-        if (!ends_with_service(service.full_name, kAirPlayService) &&
-            !ends_with_service(service.full_name, kRaopService) &&
-            !ends_with_service(service.service_type, kAirPlayService) &&
-            !ends_with_service(service.service_type, kRaopService)) {
+        auto normalized_service = service;
+        normalize_service(normalized_service);
+        if (!ends_with_service(normalized_service.full_name, kAirPlayService) &&
+            !ends_with_service(normalized_service.full_name, kRaopService) &&
+            !ends_with_service(normalized_service.service_type, kAirPlayService) &&
+            !ends_with_service(normalized_service.service_type, kRaopService)) {
             continue;
         }
-        if (service.full_name.empty()) continue;
-        devices.push_back(to_output_device(service));
+        if (normalized_service.full_name.empty()) continue;
+        append_or_merge_device(devices, to_output_device(normalized_service));
     }
 
     return devices;
@@ -765,11 +885,18 @@ std::vector<OutputDevice> browse_raw_mdns(std::chrono::milliseconds timeout) {
 
 std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds timeout) {
     auto devices = browse_windows_dns_sd(timeout);
-    if (!devices.empty()) {
-        return devices;
+    try {
+        auto raw_devices = browse_raw_mdns(timeout);
+        for (auto& device : raw_devices) {
+            append_or_merge_device(devices, std::move(device));
+        }
+    } catch (const std::exception&) {
+        if (devices.empty()) {
+            throw;
+        }
     }
 
-    return browse_raw_mdns(timeout);
+    return devices;
 }
 #else
 std::vector<OutputDevice> browse_mdns(std::chrono::milliseconds) {
