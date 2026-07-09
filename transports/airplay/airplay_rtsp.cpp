@@ -938,6 +938,11 @@ public:
         control_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.control_write, keys.control_read);
         event_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.event_read, keys.event_write);
 
+        static_cast<void>(request_success(
+            "GET",
+            "/info",
+            ap2_headers()));
+
         stream_uri_ = "rtsp://" + local_address_text() + "/" + std::to_string(ap2_session_id_);
         set_stream_uri(stream_uri_);
 
