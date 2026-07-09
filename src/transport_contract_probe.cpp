@@ -339,7 +339,7 @@ int main() {
         ok &= expect(outputs.size() == 2, "two outputs should be discovered");
         ok &= expect(packets.size() == 2, "one packet should be queued for each selected output");
         ok &= expect(control_client->audio_packet_count() == 2, "one RTP audio packet should be sent for each selected output");
-        ok &= expect(control_client->volume_set_count() == 1, "active AirPlay session volume should be sent over RTSP");
+        ok &= expect(control_client->volume_set_count() == 3, "initial and updated AirPlay session volumes should be sent over RTSP");
         ok &= expect(sessions.size() == 2, "two AirPlay sessions should exist");
 
         bool sessions_ready = true;
