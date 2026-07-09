@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
@@ -156,17 +157,25 @@ std::string random_uuid_text() {
     return result;
 }
 
-std::string random_mac_text() {
-    const auto bytes = fxchain::airplay::randomBytes(6);
+std::string colon_hex_text(const std::string& hex) {
     std::ostringstream stream;
-    stream << std::hex << std::uppercase << std::setfill('0');
-    for (size_t index = 0; index < bytes.size(); ++index) {
+    for (size_t index = 0; index + 1 < hex.size(); index += 2) {
         if (index != 0) {
             stream << ':';
         }
-        stream << std::setw(2) << static_cast<int>(bytes[index]);
+        stream << hex[index] << hex[index + 1];
     }
     return stream.str();
+}
+
+uint64_t ntp_now() {
+    using namespace std::chrono;
+    constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
+    const auto now = system_clock::now().time_since_epoch();
+    const auto seconds = duration_cast<std::chrono::seconds>(now);
+    const auto fraction_ns = duration_cast<std::chrono::nanoseconds>(now - seconds).count();
+    const auto fraction = (static_cast<unsigned long long>(fraction_ns) << 32) / 1000000000ULL;
+    return ((static_cast<uint64_t>(seconds.count()) + kUnixToNtpSeconds) << 32) | fraction;
 }
 
 std::vector<uint8_t> hkdf_sha512(
@@ -441,6 +450,80 @@ public:
         }
 
         throw std::runtime_error("Could not send RTP packet to AirPlay endpoint.");
+    }
+
+    bool receive_from(std::vector<uint8_t>& bytes, sockaddr_storage& from, int& from_size) {
+        if (handle_ == kInvalidSocket) {
+            return false;
+        }
+
+        bytes.assign(2048, 0);
+        from = {};
+#ifdef _WIN32
+        from_size = sizeof(from);
+        const int received = recvfrom(
+            handle_,
+            reinterpret_cast<char*>(bytes.data()),
+            static_cast<int>(bytes.size()),
+            0,
+            reinterpret_cast<sockaddr*>(&from),
+            &from_size);
+#else
+        socklen_t size = sizeof(from);
+        const ssize_t received = recvfrom(
+            handle_,
+            bytes.data(),
+            bytes.size(),
+            0,
+            reinterpret_cast<sockaddr*>(&from),
+            &size);
+        from_size = static_cast<int>(size);
+#endif
+        if (received <= 0) {
+            bytes.clear();
+            return false;
+        }
+
+        bytes.resize(static_cast<size_t>(received));
+        return true;
+    }
+
+    void send_to_address(const sockaddr_storage& to, int to_size, const std::vector<uint8_t>& bytes) {
+        if (handle_ == kInvalidSocket || bytes.empty()) {
+            return;
+        }
+#ifdef _WIN32
+        sendto(
+            handle_,
+            reinterpret_cast<const char*>(bytes.data()),
+            static_cast<int>(bytes.size()),
+            0,
+            reinterpret_cast<const sockaddr*>(&to),
+            to_size);
+#else
+        sendto(
+            handle_,
+            bytes.data(),
+            bytes.size(),
+            0,
+            reinterpret_cast<const sockaddr*>(&to),
+            static_cast<socklen_t>(to_size));
+#endif
+    }
+
+    void set_receive_timeout(unsigned long timeout_ms) {
+        if (handle_ == kInvalidSocket) {
+            return;
+        }
+#ifdef _WIN32
+        DWORD timeout = static_cast<DWORD>(timeout_ms);
+        setsockopt(handle_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+        timeval timeout = {};
+        timeout.tv_sec = static_cast<time_t>(timeout_ms / 1000);
+        timeout.tv_usec = static_cast<long>((timeout_ms % 1000) * 1000);
+        setsockopt(handle_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+#endif
     }
 
 private:
@@ -824,6 +907,7 @@ public:
 
         connect_to(output.endpoint_host, output.endpoint_port);
         bind_transport_ports();
+        start_timing_worker();
 
         static_cast<void>(request_success(
             "GET",
@@ -854,13 +938,7 @@ public:
         control_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.control_write, keys.control_read);
         event_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.event_read, keys.event_write);
 
-        const auto info_response = request_success(
-            "GET",
-            "/info",
-            ap2_headers());
-        static_cast<void>(info_response);
-
-        stream_uri_ = "rtsp://" + output.endpoint_host + "/" + std::to_string(ap2_session_id_);
+        stream_uri_ = "rtsp://" + local_address_text() + "/" + std::to_string(ap2_session_id_);
         set_stream_uri(stream_uri_);
 
         const auto session_body = make_ap2_session_setup_body();
@@ -869,7 +947,6 @@ public:
             stream_uri_,
             ap2_headers({
                 {"Content-Type", "application/x-apple-binary-plist"},
-                {"X-Apple-StreamID", "1"},
             }),
             string_from_bytes(session_body));
 
@@ -892,7 +969,6 @@ public:
             stream_uri_,
             ap2_headers({
                 {"Content-Type", "application/x-apple-binary-plist"},
-                {"X-Apple-StreamID", "1"},
             }),
             string_from_bytes(stream_body));
 
@@ -918,10 +994,14 @@ public:
 
     void close() {
         event_running_ = false;
+        timing_running_ = false;
         const auto event_handle = event_handle_;
         close_socket(event_handle);
         if (event_thread_.joinable()) {
             event_thread_.join();
+        }
+        if (timing_thread_.joinable()) {
+            timing_thread_.join();
         }
         event_handle_ = kInvalidSocket;
         close_socket(handle_);
@@ -1144,22 +1224,10 @@ private:
         using namespace fxchain::airplay::bplist;
 
         Dict dict;
-        const auto mac = random_mac_text();
-        dict.emplace_back("deviceID", Value::str(mac));
+        dict.emplace_back("deviceID", Value::str(colon_hex_text(dacp_id_)));
         dict.emplace_back("sessionUUID", Value::str(random_uuid_text()));
         dict.emplace_back("timingPort", Value::integer(local_udp_ports().timing.port()));
         dict.emplace_back("timingProtocol", Value::str("NTP"));
-        dict.emplace_back("isMultiSelectAirPlay", Value::boolean(true));
-        dict.emplace_back("groupContainsGroupLeader", Value::boolean(false));
-        dict.emplace_back("macAddress", Value::str(mac));
-        dict.emplace_back("model", Value::str("iPhone14,3"));
-        dict.emplace_back("name", Value::str("Foobar Universal Multiroom"));
-        dict.emplace_back("osBuildVersion", Value::str("20F66"));
-        dict.emplace_back("osName", Value::str("iPhone OS"));
-        dict.emplace_back("osVersion", Value::str("16.5"));
-        dict.emplace_back("senderSupportsRelay", Value::boolean(false));
-        dict.emplace_back("sourceVersion", Value::str("690.7.1"));
-        dict.emplace_back("statsCollectionEnabled", Value::boolean(false));
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
     }
 
@@ -1327,6 +1395,43 @@ private:
         }
     }
 
+    void start_timing_worker() {
+        if (timing_thread_.joinable()) {
+            return;
+        }
+
+        udp_ports_.timing.set_receive_timeout(500);
+        timing_running_ = true;
+        timing_thread_ = std::thread([this] {
+            timing_loop();
+        });
+    }
+
+    void timing_loop() {
+        while (timing_running_) {
+            std::vector<uint8_t> request;
+            sockaddr_storage from = {};
+            int from_size = 0;
+            if (!udp_ports_.timing.receive_from(request, from, from_size) || request.size() < 32) {
+                continue;
+            }
+
+            const auto now = ntp_now();
+            std::vector<uint8_t> response;
+            response.reserve(32);
+            response.push_back(request[0]);
+            response.push_back(0xD3);
+            write_u16_be(response, 0x0007);
+            write_u32_be(response, 0);
+            response.insert(response.end(), request.begin() + 24, request.begin() + 32);
+            write_u32_be(response, static_cast<uint32_t>(now >> 32));
+            write_u32_be(response, static_cast<uint32_t>(now & 0xFFFFFFFFu));
+            write_u32_be(response, static_cast<uint32_t>(now >> 32));
+            write_u32_be(response, static_cast<uint32_t>(now & 0xFFFFFFFFu));
+            udp_ports_.timing.send_to_address(from, from_size, response);
+        }
+    }
+
     void respond_to_event_messages(socket_handle_t event_handle, std::string& plain_buffer) {
         for (;;) {
             const auto header_end = plain_buffer.find("\r\n\r\n");
@@ -1485,6 +1590,8 @@ private:
     std::atomic_bool event_running_ = false;
     std::thread event_thread_;
     socket_handle_t event_handle_ = kInvalidSocket;
+    std::atomic_bool timing_running_ = false;
+    std::thread timing_thread_;
     LocalUdpPorts udp_ports_;
 #ifdef _WIN32
     std::unique_ptr<WinsockSession> winsock_;
@@ -1558,7 +1665,8 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     }
 
     auto connection = std::make_unique<Connection>();
-    auto session = connection->open_airplay2_transient(output, format, load_pairing_credentials(output.id));
+    auto credentials = load_pairing_credentials(output.id);
+    auto session = connection->open_airplay2_transient(output, format, credentials);
     connections_[output.id] = std::move(connection);
     return session;
 }

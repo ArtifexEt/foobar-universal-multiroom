@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -15,6 +16,13 @@ static constexpr GUID guid_device_selected_speakers = {
 
 constexpr unsigned kAirPlayBitsPerSample = 16;
 constexpr t_size kWritableFramesHint = 352;
+
+int volume_db_to_percent(double volume_db) {
+    if (!std::isfinite(volume_db) || volume_db <= -80.0) {
+        return 0;
+    }
+    return std::clamp(static_cast<int>(std::lround(std::pow(10.0, volume_db / 20.0) * 100.0)), 0, 100);
+}
 
 int16_t sample_to_pcm16(audio_sample sample) {
     const double value = std::clamp(static_cast<double>(sample), -1.0, 1.0);
@@ -83,7 +91,10 @@ public:
         SetEvent(wake_event_);
     }
 
-    void volume_set(double value) override { volume_db_.store(value); }
+    void volume_set(double value) override {
+        volume_db_.store(value);
+        MultiroomComponentState::instance().set_master_volume_percent(volume_db_to_percent(value));
+    }
 
     bool is_progressing() override { return stream_open_.load() && !paused_.load(); }
 
@@ -105,12 +116,11 @@ private:
             throw exception_unexpected_audio_format_change();
         }
 
-        const double volume = std::pow(10.0, volume_db_.load() / 20.0);
         pcm_buffer_.clear();
         pcm_buffer_.reserve(static_cast<size_t>(samples) * channels * sizeof(int16_t));
 
         for (t_size i = 0; i < samples * channels; ++i) {
-            append_le16(pcm_buffer_, sample_to_pcm16(static_cast<audio_sample>(input[i] * volume)));
+            append_le16(pcm_buffer_, sample_to_pcm16(input[i]));
         }
 
         {

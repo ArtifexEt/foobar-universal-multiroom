@@ -2,6 +2,7 @@
 #include "multiroom_component_state.h"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -115,6 +116,29 @@ std::vector<std::string> selected_ids(const std::vector<multiroom::OutputDevice>
         if (output.selected) result.push_back(output.id);
     }
     return result;
+}
+
+int effective_remote_volume(int speaker_volume, int master_volume_percent) {
+    const auto clamped_speaker = std::clamp(speaker_volume, 0, 100);
+    const auto clamped_master = std::clamp(master_volume_percent, 0, 100);
+    return std::clamp((clamped_speaker * clamped_master + 50) / 100, 0, 100);
+}
+
+void preserve_user_output_state(
+    std::vector<multiroom::OutputDevice>& refreshed,
+    const std::vector<multiroom::OutputDevice>& previous) {
+    for (auto& output : refreshed) {
+        const auto it = std::find_if(previous.begin(), previous.end(), [&](const auto& candidate) {
+            return candidate.id == output.id;
+        });
+        if (it == previous.end()) {
+            continue;
+        }
+        output.selected = it->selected;
+        output.volume = it->volume;
+        output.offset_ms = it->offset_ms;
+        output.measured_latency_ms = it->measured_latency_ms;
+    }
 }
 
 void validate_playback_format(const multiroom::PcmFormat& format) {
@@ -309,10 +333,12 @@ void MultiroomComponentState::control_update_worker() {
     for (;;) {
         std::vector<multiroom::OutputDevice> outputs_snapshot;
         multiroom::PcmFormat playback_format_snapshot{};
+        int master_volume_snapshot = 100;
         bool should_connect = false;
         {
             std::lock_guard lock(mutex_);
             outputs_snapshot = cached_outputs_;
+            master_volume_snapshot = master_volume_percent_;
             should_connect = playback_open_.load() && playback_format_valid_;
             if (should_connect) {
                 playback_format_snapshot = playback_format_;
@@ -328,8 +354,9 @@ void MultiroomComponentState::control_update_worker() {
             std::lock_guard transport_lock(transport_mutex_);
             transport_.set_enabled_outputs(selected);
             for (const auto& output : outputs_snapshot) {
-                transport_.set_output_volume(output.id, output.volume);
+                transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
             }
+            const auto previous_outputs = outputs_snapshot;
             if (should_connect) {
                 if (!playback_engine_) {
                     playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
@@ -340,6 +367,7 @@ void MultiroomComponentState::control_update_worker() {
                 transport_.connect_selected_outputs();
             }
             outputs_snapshot = transport_.list_outputs();
+            preserve_user_output_state(outputs_snapshot, previous_outputs);
             control_ok = true;
         } catch (const std::exception& e) {
             control_error_narrow = e.what();
@@ -506,35 +534,71 @@ void MultiroomComponentState::set_output_volume(const std::string& id, int volum
     }
 }
 
+void MultiroomComponentState::set_master_volume_percent(int volume) {
+    try {
+        bool discovery_started = false;
+        {
+            std::lock_guard lock(mutex_);
+            master_volume_percent_ = std::clamp(volume, 0, 100);
+            discovery_started = discovery_started_;
+            last_error_.clear();
+        }
+        if (discovery_started) {
+            schedule_control_update();
+        }
+    } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
+        last_error_ = widen_utf8(e.what());
+    }
+}
+
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
     try {
         validate_playback_format(format);
         ensure_discovery_started();
+
+        std::vector<multiroom::OutputDevice> outputs_snapshot;
+        int master_volume_snapshot = 100;
         {
             std::lock_guard lock(mutex_);
             playback_format_ = format;
             playback_format_valid_ = true;
+            outputs_snapshot = cached_outputs_;
+            master_volume_snapshot = master_volume_percent_;
             last_error_.clear();
         }
 
-        std::unique_lock transport_lock(transport_mutex_, std::try_to_lock);
-        if (!transport_lock.owns_lock()) {
-            playback_open_.store(true);
-            schedule_control_update();
-            return;
-        }
-
+        std::vector<multiroom::OutputDevice> refreshed_outputs;
         {
+            std::lock_guard transport_lock(transport_mutex_);
             if (!playback_engine_) {
                 playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
             }
+            transport_.set_enabled_outputs(selected_ids(outputs_snapshot));
+            for (const auto& output : outputs_snapshot) {
+                transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
+            }
             playback_engine_->open_stream(format);
+            transport_.connect_selected_outputs();
+            for (const auto& output : outputs_snapshot) {
+                transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
+            }
+            refreshed_outputs = transport_.list_outputs();
+            preserve_user_output_state(refreshed_outputs, outputs_snapshot);
+        }
+
+        {
+            std::lock_guard lock(mutex_);
+            cached_outputs_ = std::move(refreshed_outputs);
+            last_error_.clear();
         }
         playback_open_.store(true);
-        schedule_control_update();
     } catch (const std::exception& e) {
         {
             std::lock_guard transport_lock(transport_mutex_);
+            if (playback_engine_ && playback_engine_->stream_open()) {
+                playback_engine_->stop();
+            }
             playback_open_.store(false);
         }
         {
@@ -547,23 +611,29 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
 }
 
 void MultiroomComponentState::write_playback_pcm(const void* frames, size_t bytes) {
+    std::wstring playback_error;
     try {
-        std::unique_lock transport_lock(transport_mutex_, std::try_to_lock);
-        if (!transport_lock.owns_lock()) {
-            return;
+        {
+            std::lock_guard transport_lock(transport_mutex_);
+            if (!playback_engine_ || !playback_open_.load()) {
+                return;
+            }
+            if (!playback_engine_->stream_open()) {
+                return;
+            }
+            playback_engine_->write_interleaved_pcm(frames, bytes);
         }
-        if (!playback_engine_ || !playback_open_.load()) {
-            return;
-        }
-        if (!playback_engine_->stream_open()) {
-            return;
-        }
-        playback_engine_->write_interleaved_pcm(frames, bytes);
+
         std::lock_guard lock(mutex_);
         last_error_.clear();
     } catch (const std::exception& e) {
-        std::lock_guard lock(mutex_);
-        last_error_ = widen_utf8(e.what());
+        playback_error = widen_utf8(e.what());
+        {
+            std::lock_guard lock(mutex_);
+            last_error_ = playback_error;
+        }
+        FB2K_console_formatter() << "[Universal Multiroom] AirPlay PCM write failed: " << e.what();
+        throw;
     }
 }
 
