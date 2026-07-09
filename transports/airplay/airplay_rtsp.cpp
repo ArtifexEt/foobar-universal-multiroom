@@ -1339,7 +1339,7 @@ private:
             return;
         }
 
-        configure_socket_timeouts(handle_, 3000);
+        configure_socket_timeouts(handle_, 10000);
     }
 
     void configure_socket_timeouts(socket_handle_t handle, unsigned long timeout_ms) {
