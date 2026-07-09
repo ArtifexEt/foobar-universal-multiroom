@@ -16,6 +16,7 @@ add_library(MultiroomCore
     components/foo_out_multiroom_bridge/core/output_registry.cpp
     components/foo_out_multiroom_bridge/core/packet_scheduler.cpp
     components/foo_out_multiroom_bridge/core/sync_clock.cpp
+    transports/airplay/airplay2_credentials.cpp
     transports/airplay/airplay_discovery.cpp
     transports/airplay/airplay2_external_crypto.cpp
     transports/airplay/airplay2_session.cpp

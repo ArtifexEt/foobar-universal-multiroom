@@ -631,7 +631,8 @@ std::string header_value_from_message(const std::string& message, const std::str
 
 class AirPlayRtspControlClient::Connection {
 public:
-    Connection() = default;
+    explicit Connection(std::shared_ptr<AirPlay2CredentialStore> credential_store)
+        : credential_store_(std::move(credential_store)) {}
 
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
@@ -775,7 +776,7 @@ public:
             });
     }
 
-    AirPlayNegotiatedSession open_airplay2_transient(const OutputDevice& output, const PcmFormat& format) {
+    AirPlayNegotiatedSession open_airplay2(const OutputDevice& output, const PcmFormat& format) {
         if (format.sample_rate != 44100 || format.channels != 2 || format.bits_per_sample != 16) {
             throw std::invalid_argument("AirPlay 2 MVP currently requires 44.1 kHz stereo 16-bit PCM.");
         }
@@ -790,20 +791,7 @@ public:
         connect_to(output.endpoint_host, output.endpoint_port);
         bind_transport_ports();
 
-        const auto shared_secret = run_transient_pair_setup();
-        auto audio_key = shared_secret;
-        if (audio_key.size() > 32) {
-            audio_key.resize(32);
-        }
-        if (audio_key.size() != 32) {
-            throw std::runtime_error("AirPlay 2 pairing did not produce a usable audio key.");
-        }
-        ap2_audio_key_ = std::move(audio_key);
-        ap2_audio_nonce_ = 0;
-
-        const auto keys = derive_airplay2_encrypted_keys(shared_secret);
-        control_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.control_write, keys.control_read);
-        event_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.event_read, keys.event_write);
+        establish_airplay2_security(output);
 
         const auto info_response = request_success(
             "GET",
@@ -884,6 +872,32 @@ public:
     }
 
 private:
+    void establish_airplay2_security(const OutputDevice& output) {
+        const auto credentials = credential_store_->find(output);
+        if (credentials) {
+            run_pair_verify(*credentials);
+            return;
+        }
+
+        const auto shared_secret = run_transient_pair_setup();
+        apply_airplay2_security(shared_secret, derive_airplay2_encrypted_keys(shared_secret));
+    }
+
+    void apply_airplay2_security(const AirPlay2Bytes& shared_secret, const AirPlay2EncryptedKeys& keys) {
+        auto audio_key = shared_secret;
+        if (audio_key.size() > 32) {
+            audio_key.resize(32);
+        }
+        if (audio_key.size() != 32) {
+            throw std::runtime_error("AirPlay 2 pairing did not produce a usable audio key.");
+        }
+
+        ap2_audio_key_ = std::move(audio_key);
+        ap2_audio_nonce_ = 0;
+        control_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.control_write, keys.control_read);
+        event_cipher_ = std::make_unique<AirPlay2FrameCipher>(keys.event_read, keys.event_write);
+    }
+
     std::map<std::string, std::string> ap2_headers(std::map<std::string, std::string> headers = {}) const {
         headers.emplace("User-Agent", "AirPlay/550.10");
         headers.emplace("DACP-ID", dacp_id_);
@@ -922,6 +936,34 @@ private:
                 std::to_string(response.status_code) + " " + response.reason);
         }
         return response;
+    }
+
+    void run_pair_verify(const AirPlay2Credentials& credentials) {
+        if (!credentials.valid_for_pair_verify()) {
+            throw std::runtime_error("AirPlay 2 stored credentials are incomplete; pair this speaker again.");
+        }
+
+        AirPlay2PairVerifySession verifier(credentials.controller_identifier, credentials.controller_seed);
+        const auto m2_response = http_post_success("/pair-verify", "application/octet-stream", verifier.make_m1());
+        const auto m2 = verifier.handle_m2(bytes_from_string(m2_response.body), credentials.accessory_public_key);
+        const auto m4_response = http_post_success("/pair-verify", "application/octet-stream", verifier.make_m3());
+        validate_pair_verify_m4(bytes_from_string(m4_response.body));
+        apply_airplay2_security(m2.shared_secret, m2.keys);
+    }
+
+    void validate_pair_verify_m4(const AirPlay2Bytes& body) const {
+        using namespace fxchain::airplay;
+
+        const auto message = tlv::decode(body);
+        if (auto error = tlv::get(message, tlv::Error)) {
+            throw std::runtime_error("AirPlay 2 pair-verify M4 returned error " +
+                                     std::to_string(error->empty() ? 0 : error->front()) + ".");
+        }
+
+        const auto state = tlv::get(message, tlv::State);
+        if (!state || state->size() != 1 || state->front() != 0x04) {
+            throw std::runtime_error("AirPlay 2 pair-verify M4 was incomplete.");
+        }
     }
 
     AirPlay2Bytes run_transient_pair_setup() {
@@ -1317,6 +1359,7 @@ private:
     std::thread event_thread_;
     socket_handle_t event_handle_ = kInvalidSocket;
     LocalUdpPorts udp_ports_;
+    std::shared_ptr<AirPlay2CredentialStore> credential_store_;
 #ifdef _WIN32
     std::unique_ptr<WinsockSession> winsock_;
 #endif
@@ -1333,11 +1376,18 @@ std::string AirPlayRtspResponse::header(const std::string& name) const {
 
 AirPlayRtspControlClient::~AirPlayRtspControlClient() = default;
 
+AirPlayRtspControlClient::AirPlayRtspControlClient(std::shared_ptr<AirPlay2CredentialStore> credential_store)
+    : credential_store_(std::move(credential_store)) {
+    if (!credential_store_) {
+        throw std::invalid_argument("AirPlay 2 credential store cannot be null.");
+    }
+}
+
 AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& output, const PcmFormat& format) {
-    auto connection = std::make_unique<Connection>();
+    auto connection = std::make_unique<Connection>(credential_store_);
 
     if (output.supports_airplay2) {
-        auto session = connection->open_airplay2_transient(output, format);
+        auto session = connection->open_airplay2(output, format);
         connections_[output.id] = std::move(connection);
         return session;
     }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "airplay2_credentials.h"
 #include "core/packet_scheduler.h"
 #include "transport.h"
 
@@ -60,6 +61,8 @@ public:
 
 class AirPlayRtspControlClient final : public AirPlayControlClient {
 public:
+    explicit AirPlayRtspControlClient(
+        std::shared_ptr<AirPlay2CredentialStore> credential_store = make_airplay2_memory_credential_store());
     ~AirPlayRtspControlClient() override;
 
     AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) override;
@@ -79,6 +82,7 @@ public:
 private:
     class Connection;
 
+    std::shared_ptr<AirPlay2CredentialStore> credential_store_;
     std::map<std::string, std::unique_ptr<Connection>> connections_;
 };
 

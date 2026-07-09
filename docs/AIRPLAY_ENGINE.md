@@ -24,7 +24,7 @@ select, authenticate, synchronize, and stream to speakers by itself.
 - Stored-credential pair-verify and on-screen PIN pairing are the next auth
   layer, not a dependency on OwnTone or another runtime server.
 - The legacy RTSP/TCP `OPTIONS`, `ANNOUNCE`, `SETUP`, `RECORD`, `FLUSH`, and
-  `TEARDOWN` path is retained as a probe/fallback only.
+  `TEARDOWN` path is retained as a diagnostic probe only.
 - Keeps protocol details out of foobar UI code.
 
 `encoder`
@@ -105,7 +105,8 @@ The UI should display two different ideas clearly:
 7. Add multiple selected speakers using the same sender timeline.
 8. Add per-speaker volume.
 9. Add offset compensation.
-10. Add PIN pairing and persisted pair-verify credentials.
+10. Add PIN pairing and wire persisted pair-verify credentials into foobar
+    profile/config storage.
 11. Add remote playback feedback for pause, previous, next, and device-side
    volume changes.
 12. Add metadata/artwork.

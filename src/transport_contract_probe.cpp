@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
+#include "../transports/airplay/airplay2_credentials.h"
 #include "../transports/airplay/airplay_transport.h"
 
 struct TransportCapability {
@@ -63,6 +65,24 @@ multiroom::OutputDevice make_airplay_loopback_output(
     output.endpoint_host = "127.0.0.1";
     output.endpoint_port = port;
     return output;
+}
+
+multiroom::airplay::AirPlay2Bytes deterministic_bytes(size_t size, uint8_t seed) {
+    multiroom::airplay::AirPlay2Bytes result(size);
+    for (size_t index = 0; index < result.size(); ++index) {
+        result[index] = static_cast<uint8_t>(seed + index);
+    }
+    return result;
+}
+
+multiroom::airplay::AirPlay2Credentials make_airplay2_credentials(std::string output_id) {
+    multiroom::airplay::AirPlay2Credentials credentials;
+    credentials.output_id = std::move(output_id);
+    credentials.controller_identifier = "foobar-universal-multiroom";
+    credentials.controller_seed = deterministic_bytes(32, 1);
+    credentials.accessory_identifier = deterministic_bytes(8, 80);
+    credentials.accessory_public_key = deterministic_bytes(32, 120);
+    return credentials;
 }
 
 class SelectiveFailingControlClient final : public multiroom::airplay::AirPlayControlClient {
@@ -171,6 +191,56 @@ bool exercise_partial_airplay_open_failure() {
         threw_all_failed = true;
     }
     ok &= expect(threw_all_failed, "opening should still fail when no selected output can be opened");
+
+    return ok;
+}
+
+bool exercise_airplay2_credential_store() {
+    bool ok = true;
+
+    const auto output = make_airplay_loopback_output("living-room", "Living Room", 7100);
+    auto memory_store = multiroom::airplay::make_airplay2_memory_credential_store();
+    ok &= expect(!memory_store->find(output), "memory credential store should start empty");
+
+    bool rejected_invalid = false;
+    try {
+        memory_store->save({});
+    } catch (const std::invalid_argument&) {
+        rejected_invalid = true;
+    }
+    ok &= expect(rejected_invalid, "credential store should reject incomplete credentials");
+
+    auto credentials = make_airplay2_credentials(output.id);
+    ok &= expect(credentials.valid_for_pair_verify(), "test credentials should be pair-verify ready");
+    memory_store->save(credentials);
+    auto found = memory_store->find(output);
+    ok &= expect(found && found->controller_identifier == credentials.controller_identifier,
+                 "memory credential store should return saved credentials by output id");
+    memory_store->remove(output.id);
+    ok &= expect(!memory_store->find(output), "memory credential store should remove credentials by output id");
+
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("foobar-universal-multiroom-airplay2-credentials-" + std::to_string(std::rand()) + ".txt");
+    {
+        multiroom::airplay::AirPlay2FileCredentialStore file_store(path);
+        file_store.save(credentials);
+    }
+    {
+        multiroom::airplay::AirPlay2FileCredentialStore file_store(path);
+        found = file_store.find(output);
+        ok &= expect(found && found->controller_seed == credentials.controller_seed,
+                     "file credential store should persist credentials across instances");
+
+        credentials.controller_seed = deterministic_bytes(32, 7);
+        file_store.save(credentials);
+        found = file_store.find(output);
+        ok &= expect(found && found->controller_seed == credentials.controller_seed,
+                     "file credential store should update existing credentials");
+
+        file_store.remove(output.id);
+        ok &= expect(!file_store.find(output), "file credential store should remove persisted credentials");
+    }
+    std::filesystem::remove(path);
 
     return ok;
 }
@@ -302,6 +372,7 @@ int main() {
         ok &= expect(!transport.stream_open(), "stop should close transport stream");
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");
         ok &= exercise_partial_airplay_open_failure();
+        ok &= exercise_airplay2_credential_store();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {
