@@ -5,6 +5,8 @@
 #include <commctrl.h>
 #include <libPPUI/win32_op.h>
 
+#include <algorithm>
+#include <cwctype>
 #include <sstream>
 
 namespace {
@@ -15,6 +17,9 @@ static constexpr UINT_PTR kSpeakerCheckBase = 30000;
 static constexpr UINT_PTR kSpeakerVolumeBase = 31000;
 static constexpr UINT_PTR kRefreshCommand = 32000;
 static constexpr UINT_PTR kEmptyStatusId = 32001;
+static constexpr UINT_PTR kPairPinEditId = 32002;
+static constexpr UINT_PTR kPairCommand = 32003;
+static constexpr UINT_PTR kPairPinLabelId = 32004;
 static constexpr UINT_PTR kVolumeLabelBase = 33000;
 static constexpr UINT_PTR kRefreshTimer = 34000;
 static constexpr int kPopupWidth = 372;
@@ -22,7 +27,8 @@ static constexpr int kPopupPadding = 12;
 static constexpr int kHeaderHeight = 34;
 static constexpr int kRowHeight = 62;
 static constexpr int kFooterHeight = 42;
-static constexpr int kToolbarHeight = 28;
+static constexpr int kToolbarMinHeight = 22;
+static constexpr int kToolbarMaxHeight = 34;
 
 std::wstring widen_utf8(const std::string& text) {
     if (text.empty()) return {};
@@ -37,6 +43,31 @@ std::wstring widen_utf8(const std::string& text) {
 
 std::wstring volume_label(int volume) {
     return std::to_wstring(volume) + L"%";
+}
+
+std::wstring text_from_window(HWND wnd) {
+    if (wnd == nullptr) return {};
+    const int length = ::GetWindowTextLengthW(wnd);
+    if (length <= 0) return {};
+
+    std::wstring result(static_cast<size_t>(length) + 1, L'\0');
+    const int copied = ::GetWindowTextW(wnd, result.data(), length + 1);
+    result.resize(static_cast<size_t>(std::max(copied, 0)));
+    return result;
+}
+
+std::string narrow_pin(const std::wstring& text) {
+    std::string pin;
+    for (wchar_t ch : text) {
+        if (std::iswspace(ch) != 0) {
+            continue;
+        }
+        if (ch < L'0' || ch > L'9') {
+            return {};
+        }
+        pin.push_back(static_cast<char>('0' + (ch - L'0')));
+    }
+    return pin;
 }
 
 std::string outputs_signature(const std::vector<multiroom::OutputDevice>& outputs) {
@@ -204,6 +235,11 @@ private:
             return 0;
         }
 
+        if (id == kPairCommand && code == BN_CLICKED) {
+            pair_selected_output();
+            return 0;
+        }
+
         if (id >= kSpeakerCheckBase && id < kSpeakerCheckBase + outputs_.size() && code == BN_CLICKED) {
             const auto index = static_cast<size_t>(id - kSpeakerCheckBase);
             MultiroomComponentState::instance().toggle_output(outputs_[index].id);
@@ -313,6 +349,48 @@ private:
 
         add_control(::CreateWindowExW(
             0,
+            L"STATIC",
+            L"PIN",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            kPopupPadding,
+            popup_height() - 30,
+            24,
+            20,
+            m_hWnd,
+            reinterpret_cast<HMENU>(kPairPinLabelId),
+            core_api::get_my_instance(),
+            nullptr));
+
+        add_control(::CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
+            kPopupPadding + 28,
+            popup_height() - 32,
+            54,
+            22,
+            m_hWnd,
+            reinterpret_cast<HMENU>(kPairPinEditId),
+            core_api::get_my_instance(),
+            nullptr));
+
+        add_control(::CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Pair",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            kPopupPadding + 88,
+            popup_height() - 32,
+            58,
+            24,
+            m_hWnd,
+            reinterpret_cast<HMENU>(kPairCommand),
+            core_api::get_my_instance(),
+            nullptr));
+
+        add_control(::CreateWindowExW(
+            0,
             L"BUTTON",
             L"Refresh",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -326,6 +404,50 @@ private:
             nullptr));
 
         sync_control_values();
+    }
+
+    std::string pair_target_id() const {
+        std::string fallback;
+        size_t fallback_count = 0;
+
+        for (const auto& output : outputs_) {
+            if (!output.supports_airplay2) {
+                continue;
+            }
+            if (output.selected) {
+                return output.id;
+            }
+            if (output.requires_auth) {
+                fallback = output.id;
+                ++fallback_count;
+            }
+        }
+
+        return fallback_count == 1 ? fallback : std::string{};
+    }
+
+    void pair_selected_output() {
+        const auto target_id = pair_target_id();
+        if (target_id.empty()) {
+            ::MessageBoxW(m_hWnd, L"Select one AirPlay speaker to pair.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        const auto pin = narrow_pin(text_from_window(::GetDlgItem(m_hWnd, static_cast<int>(kPairPinEditId))));
+        if (pin.empty()) {
+            ::MessageBoxW(m_hWnd, L"Enter the AirPlay PIN shown by the speaker or TV.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            if (HWND pin_control = ::GetDlgItem(m_hWnd, static_cast<int>(kPairPinEditId)); pin_control != nullptr) {
+                ::SetFocus(pin_control);
+                ::SendMessageW(pin_control, EM_SETSEL, 0, -1);
+            }
+            return;
+        }
+
+        MultiroomComponentState::instance().pair_output(target_id, pin);
+        status_ = MultiroomComponentState::instance().status_text();
+        Invalidate();
+        if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+        SetTimer(kRefreshTimer, 250);
     }
 
     void create_speaker_row(size_t index, int row_top) {
@@ -522,10 +644,10 @@ public:
 
     ui_element_min_max_info get_min_max_info() override {
         ui_element_min_max_info info;
-        info.m_min_width = 120;
-        info.m_min_height = kToolbarHeight;
-        info.m_max_width = 220;
-        info.m_max_height = kToolbarHeight;
+        info.m_min_width = 36;
+        info.m_min_height = kToolbarMinHeight;
+        info.m_max_width = 260;
+        info.m_max_height = kToolbarMaxHeight;
         return info;
     }
 

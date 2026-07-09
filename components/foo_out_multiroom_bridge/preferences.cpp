@@ -106,6 +106,10 @@ std::wstring trim(std::wstring text) {
     return text.substr(first, last - first);
 }
 
+int max_int(int left, int right) {
+    return left > right ? left : right;
+}
+
 std::string narrow_pin(const std::wstring& text) {
     std::string pin;
     for (wchar_t ch : text) {
@@ -194,6 +198,9 @@ private:
             return self->on_erase(wnd, reinterpret_cast<HDC>(wp));
         case WM_COMMAND:
             return self->on_command(wp);
+        case WM_SIZE:
+            self->layout_status_page();
+            return TRUE;
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
@@ -300,6 +307,7 @@ private:
                 ::SetWindowPos(page_wnd, HWND_TOP, x, y, width, height, SWP_NOACTIVATE);
             }
         }
+        layout_status_page();
     }
 
     void show_selected_page() {
@@ -308,6 +316,38 @@ private:
             if (page_wnd != nullptr) {
                 ::ShowWindow(page_wnd, page == static_cast<size_t>(selected_page_) ? SW_SHOW : SW_HIDE);
             }
+        }
+    }
+
+    void layout_status_page() {
+        HWND page = page_wnds_[static_cast<size_t>(Page::Status)];
+        if (page == nullptr || !::IsWindow(page)) return;
+
+        RECT rc = {};
+        ::GetClientRect(page, &rc);
+        const int margin = 11;
+        const int client_width = static_cast<int>(rc.right - rc.left);
+        const int client_height = static_cast<int>(rc.bottom - rc.top);
+        const int width = max_int(0, client_width - (margin * 2));
+        const int pair_top = max_int(96, client_height - 30);
+        const int list_top = 83;
+        const int list_height = max_int(56, pair_top - list_top - 8);
+
+        if (HWND summary = find_dlg_item(page, idStatusSummary); summary != nullptr) {
+            const int summary_width = max_int(120, client_width - 120);
+            ::SetWindowPos(summary, nullptr, 109, 11, summary_width, 13, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (HWND list = find_dlg_item(page, idSpeakerList); list != nullptr) {
+            ::SetWindowPos(list, nullptr, margin, list_top, width, list_height, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (HWND pin_label = find_dlg_item(page, idPairPinLabel); pin_label != nullptr) {
+            ::SetWindowPos(pin_label, nullptr, margin, pair_top + 2, 24, 13, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (HWND pin = find_dlg_item(page, idPairPin); pin != nullptr) {
+            ::SetWindowPos(pin, nullptr, 39, pair_top, 52, 14, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (HWND pair = find_dlg_item(page, idPairButton); pair != nullptr) {
+            ::SetWindowPos(pair, nullptr, 101, pair_top, 110, 14, SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 

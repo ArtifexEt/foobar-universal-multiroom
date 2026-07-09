@@ -25,6 +25,7 @@ public:
     bool pairing_in_progress();
     void toggle_output(const std::string& id);
     void set_output_volume(const std::string& id, int volume);
+    void set_master_volume_percent(int volume);
     void open_playback_stream(const multiroom::PcmFormat& format);
     void write_playback_pcm(const void* frames, size_t bytes);
     void flush_playback();
@@ -57,6 +58,7 @@ private:
     bool control_requested_ = false;
     bool pairing_in_progress_ = false;
     bool playback_format_valid_ = false;
+    int master_volume_percent_ = 100;
     std::atomic_bool playback_open_ = false;
     size_t refresh_count_ = 0;
     std::wstring last_error_;

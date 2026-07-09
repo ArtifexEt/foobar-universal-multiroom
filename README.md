@@ -28,7 +28,7 @@ without changing the foobar UI.
 - The foobar UI includes a compact speaker selector element.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
-  volume sliders.
+  volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
   speakers.
@@ -53,6 +53,8 @@ without changing the foobar UI.
   pipeline.
 - Per-speaker UI volume changes are sent to active AirPlay sessions with native
   RTSP `SET_PARAMETER` volume updates.
+- The main foobar2000 volume is treated as a remote AirPlay master volume
+  multiplier instead of digitally attenuating the PCM stream.
 - Still missing before daily use: full encrypted event-channel handling,
   real-device validation, and timing hardening.
 
@@ -87,6 +89,9 @@ ctest --test-dir build -C Release --output-on-failure
 
 .\build\Release\MultiroomAirPlayNetworkProbe.exe --timeout-ms 4000 --list-txt
 .\build\Release\MultiroomAirPlayNetworkProbe.exe --play --target first --duration-ms 5000 --require-speaker
+.\build\Release\MultiroomAirPlayAudioDiagnostics.exe --target korytarz --duration-ms 5000 --volume 45 --require-speaker
+.\build\Release\MultiroomAirPlayAudioDiagnostics.exe --target korytarz --pin 1234 --duration-ms 5000 --volume 45 --require-speaker
+.\build\Release\MultiroomAirPlayAudioDiagnostics.exe --loopback-self-test
 ```
 
 GitHub Actions also downloads the foobar2000 SDK, builds the component with

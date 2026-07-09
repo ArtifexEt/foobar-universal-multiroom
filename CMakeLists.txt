@@ -8,6 +8,7 @@ set(AIRPLAY2_SENDER_CPP_TAG "8c4034263f1c265d25b3cfb88a090624760ad22a" CACHE STR
 FetchContent_Declare(airplay2_sender_cpp
     GIT_REPOSITORY https://github.com/akustikrausch/airplay2-sender-cpp.git
     GIT_TAG        ${AIRPLAY2_SENDER_CPP_TAG}
+    PATCH_COMMAND  git apply --ignore-whitespace "${CMAKE_CURRENT_SOURCE_DIR}/patches/airplay2-compact-bplist.patch"
 )
 FetchContent_MakeAvailable(airplay2_sender_cpp)
 
@@ -38,15 +39,22 @@ add_executable(MultiroomAirPlayNetworkProbe
     src/airplay_network_probe.cpp
 )
 
+add_executable(MultiroomAirPlayAudioDiagnostics
+    src/airplay_audio_diagnostics.cpp
+)
+
 target_compile_features(MultiroomTransportContractProbe PRIVATE cxx_std_20)
 target_compile_features(MultiroomAirPlayNetworkProbe PRIVATE cxx_std_20)
+target_compile_features(MultiroomAirPlayAudioDiagnostics PRIVATE cxx_std_20)
 target_link_libraries(MultiroomTransportContractProbe PRIVATE MultiroomCore)
 target_link_libraries(MultiroomAirPlayNetworkProbe PRIVATE MultiroomCore)
+target_link_libraries(MultiroomAirPlayAudioDiagnostics PRIVATE MultiroomCore)
 
 if(MSVC)
     target_compile_options(MultiroomCore PRIVATE /W4 /permissive-)
     target_compile_options(MultiroomTransportContractProbe PRIVATE /W4 /permissive-)
     target_compile_options(MultiroomAirPlayNetworkProbe PRIVATE /W4 /permissive-)
+    target_compile_options(MultiroomAirPlayAudioDiagnostics PRIVATE /W4 /permissive-)
 endif()
 
 if(WIN32)
@@ -58,3 +66,4 @@ target_link_libraries(MultiroomCore PUBLIC airplay_crypto)
 enable_testing()
 
 add_test(NAME transport_contract_probe COMMAND MultiroomTransportContractProbe)
+add_test(NAME airplay_audio_diagnostics_loopback COMMAND MultiroomAirPlayAudioDiagnostics --loopback-self-test)
