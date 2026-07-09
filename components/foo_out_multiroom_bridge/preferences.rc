@@ -22,16 +22,8 @@ FONT 8, "MS Shell Dlg", 400, 0, 1
     LTEXT      "Transport", IDC_STATIC, 11, 11, 95, 13
     LTEXT      "AirPlay discovery: not started", idStatusSummary, 109, 11, 250, 13
     PUSHBUTTON "Refresh speakers", idRefreshButton, 11, 35, 110, 14
-    LTEXT      "Manual AirPlay", IDC_STATIC, 11, 66, 95, 13
-    LTEXT      "Name", IDC_STATIC, 11, 86, 45, 13
-    EDITTEXT   idManualName, 61, 84, 122, 14, ES_AUTOHSCROLL
-    LTEXT      "Host/IP", IDC_STATIC, 194, 86, 45, 13
-    EDITTEXT   idManualHost, 244, 84, 132, 14, ES_AUTOHSCROLL
-    LTEXT      "Port", IDC_STATIC, 386, 86, 28, 13
-    EDITTEXT   idManualPort, 416, 84, 47, 14, ES_AUTOHSCROLL | ES_NUMBER
-    PUSHBUTTON "Add speaker", idManualAddButton, 11, 109, 110, 14
-    LTEXT      "Speakers", IDC_STATIC, 11, 139, 95, 13
-    CONTROL    "", idSpeakerList, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 11, 156, 452, 112
+    LTEXT      "Speakers", IDC_STATIC, 11, 66, 95, 13
+    CONTROL    "", idSpeakerList, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 11, 83, 452, 185
     LTEXT      "PIN", IDC_STATIC, 11, 276, 24, 13
     EDITTEXT   idPairPin, 39, 274, 52, 14, ES_AUTOHSCROLL | ES_NUMBER
     PUSHBUTTON "Pair selected", idPairButton, 101, 274, 110, 14

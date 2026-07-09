@@ -21,7 +21,6 @@ public:
     bool refresh_in_progress();
     bool control_in_progress();
     std::vector<multiroom::OutputDevice> outputs();
-    bool add_manual_airplay_output(const std::wstring& name, const std::wstring& host, std::uint16_t port);
     void pair_output(const std::string& id, const std::string& pin);
     bool pairing_in_progress();
     void toggle_output(const std::string& id);

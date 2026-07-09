@@ -30,8 +30,8 @@ without changing the foobar UI.
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
   volume sliders.
 - Preferences expose status, refresh, repository, and support actions with
-  foobar dark-mode/scaling hooks, plus a manual AirPlay host/IP + port fallback
-  for networks where mDNS discovery is blocked or unreliable.
+  foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
+  speakers.
 - The transport-neutral core includes output state, packet scheduling, stream
   clocking, and the AirPlay transport boundary.
 - AirPlay discovery now classifies AirPlay 2, legacy unencrypted L16, auth, and
@@ -41,17 +41,19 @@ without changing the foobar UI.
 - The first real AirPlay 2 sender path performs transient HAP pair-setup,
   switches the RTSP control channel to ChaCha20-Poly1305 framing, negotiates
   binary-plist session/stream `SETUP`, and sends encrypted realtime ALAC RTP.
+- PIN pairing persists AirPlay credentials through foobar configuration and
+  reconnects with stored pair-verify credentials.
 - The legacy RTSP/TCP probe client has `OPTIONS`,
   `ANNOUNCE`, `SETUP`, `RECORD`, `FLUSH`, and `TEARDOWN` session setup against
   discovered endpoints.
-- The RTP/L16 sender path remains only as a legacy/probe path, not the MVP.
+- The RTP/L16 sender path remains only as a diagnostic legacy probe path, not
+  the MVP or product streaming path.
 - Foobar registers a high-latency `Universal Multiroom Bridge` output device
   that feeds selected AirPlay 2 sessions from the normal foobar output
   pipeline.
 - Per-speaker UI volume changes are sent to active AirPlay sessions with native
   RTSP `SET_PARAMETER` volume updates.
-- Still missing before daily use: on-screen PIN pairing UI, persisted
-  credentials/pair-verify reconnects, full encrypted event-channel handling,
+- Still missing before daily use: full encrypted event-channel handling,
   real-device validation, and timing hardening.
 
 ## TODO

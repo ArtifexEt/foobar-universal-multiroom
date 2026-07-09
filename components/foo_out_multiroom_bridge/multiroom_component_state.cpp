@@ -2,7 +2,6 @@
 #include "multiroom_component_state.h"
 
 #include <algorithm>
-#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -23,24 +22,6 @@ std::wstring widen_utf8(const std::string& text) {
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, result.data(), required);
     result.resize(static_cast<size_t>(required - 1));
     return result;
-}
-
-std::string narrow_utf16(const std::wstring& text) {
-    if (text.empty()) return {};
-    const int required = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (required <= 1) return {};
-
-    std::string result(static_cast<size_t>(required), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, result.data(), required, nullptr, nullptr);
-    result.resize(static_cast<size_t>(required - 1));
-    return result;
-}
-
-std::string lowercase_ascii(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return text;
 }
 
 std::string hex_from_bytes(const std::vector<uint8_t>& bytes) {
@@ -417,69 +398,6 @@ bool MultiroomComponentState::pairing_in_progress() {
 std::vector<multiroom::OutputDevice> MultiroomComponentState::outputs() {
     std::lock_guard lock(mutex_);
     return cached_outputs_;
-}
-
-bool MultiroomComponentState::add_manual_airplay_output(
-    const std::wstring& name,
-    const std::wstring& host,
-    std::uint16_t port) {
-    try {
-        const auto endpoint_host = narrow_utf16(host);
-        if (endpoint_host.empty()) {
-            throw std::invalid_argument("Manual AirPlay host/IP is required.");
-        }
-        if (port == 0) {
-            throw std::invalid_argument("Manual AirPlay port must be between 1 and 65535.");
-        }
-
-        const auto endpoint_port = std::to_string(port);
-        auto output_name = narrow_utf16(name);
-        if (output_name.empty()) {
-            output_name = endpoint_host + ":" + endpoint_port;
-        }
-
-        multiroom::OutputDevice device;
-        device.id = "airplay:manual:" + lowercase_ascii(endpoint_host) + ":" + endpoint_port;
-        device.name = output_name;
-        device.type = multiroom::OutputType::AirPlay;
-        device.requires_auth = true;
-        device.needs_auth_key = true;
-        device.supports_airplay2 = true;
-        device.requires_encrypted_stream = true;
-        device.volume = 50;
-        device.format = "airplay2";
-        device.supported_formats = {"airplay2"};
-        device.endpoint_host = endpoint_host;
-        device.endpoint_port = port;
-        device.txt_records = {
-            {"manual", "1"},
-            {"et", "4"},
-        };
-
-        ensure_discovery_started();
-
-        std::vector<multiroom::OutputDevice> outputs_snapshot;
-        {
-            std::lock_guard transport_lock(transport_mutex_);
-            transport_.add_discovered_output(std::move(device));
-            outputs_snapshot = transport_.list_outputs();
-        }
-        {
-            std::lock_guard lock(mutex_);
-            cached_outputs_ = std::move(outputs_snapshot);
-            last_error_.clear();
-        }
-
-        FB2K_console_formatter() << "[Universal Multiroom] Manual AirPlay device added: "
-                                  << output_name.c_str()
-                                  << " endpoint=" << endpoint_host.c_str()
-                                  << ":" << port;
-        return true;
-    } catch (const std::exception& e) {
-        std::lock_guard lock(mutex_);
-        last_error_ = widen_utf8(e.what());
-        return false;
-    }
 }
 
 void MultiroomComponentState::pair_output(const std::string& id, const std::string& pin) {
