@@ -168,6 +168,21 @@ std::string colon_hex_text(const std::string& hex) {
     return stream.str();
 }
 
+uint64_t parse_hex_u64(const std::string& hex) {
+    uint64_t value = 0;
+    for (const char c : hex) {
+        value <<= 4;
+        if (c >= '0' && c <= '9') {
+            value |= static_cast<uint64_t>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            value |= static_cast<uint64_t>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            value |= static_cast<uint64_t>(c - 'A' + 10);
+        }
+    }
+    return value;
+}
+
 uint64_t ntp_now() {
     using namespace std::chrono;
     constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
@@ -1228,11 +1243,35 @@ private:
     AirPlay2Bytes make_ap2_session_setup_body() const {
         using namespace fxchain::airplay::bplist;
 
+        const auto device_id = colon_hex_text(dacp_id_);
+        const auto mac_address = colon_hex_text(dacp_id_.substr(0, 12));
+        const auto peer_id = random_uuid_text();
+        const auto local_address = local_address_text();
+        const auto clock_id = static_cast<int64_t>(parse_hex_u64(dacp_id_));
+
+        Array addresses;
+        addresses.push_back(Value::str(local_address));
+
+        Dict timing_peer_info;
+        timing_peer_info.emplace_back("ID", Value::str(peer_id));
+        timing_peer_info.emplace_back("DeviceType", Value::integer(0));
+        timing_peer_info.emplace_back("ClockID", Value::integer(clock_id));
+        timing_peer_info.emplace_back("SupportsClockPortMatchingOverride", Value::boolean(false));
+        timing_peer_info.emplace_back("Addresses", Value::array(std::move(addresses)));
+
+        Array timing_peer_list;
+        timing_peer_list.push_back(Value::object(timing_peer_info));
+
         Dict dict;
-        dict.emplace_back("deviceID", Value::str(colon_hex_text(dacp_id_)));
+        dict.emplace_back("name", Value::str("FoobarUniversalMultiroom"));
+        dict.emplace_back("deviceID", Value::str(device_id));
         dict.emplace_back("sessionUUID", Value::str(random_uuid_text()));
-        dict.emplace_back("timingPort", Value::integer(local_udp_ports().timing.port()));
-        dict.emplace_back("timingProtocol", Value::str("NTP"));
+        dict.emplace_back("timingProtocol", Value::str("PTP"));
+        dict.emplace_back("macAddress", Value::str(mac_address));
+        dict.emplace_back("groupUUID", Value::str(random_uuid_text()));
+        dict.emplace_back("groupContainsGroupLeader", Value::boolean(false));
+        dict.emplace_back("timingPeerInfo", Value::object(timing_peer_info));
+        dict.emplace_back("timingPeerList", Value::array(std::move(timing_peer_list)));
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
     }
 
