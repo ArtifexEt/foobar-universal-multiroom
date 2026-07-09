@@ -86,13 +86,26 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         throw std::invalid_argument("Frame buffer cannot be null when bytes are present.");
     }
 
-    auto outputs = registry_.list();
+    const auto registry_outputs = registry_.list();
     const auto ready_ids = sessions_.ready_output_ids();
-    outputs.erase(
-        std::remove_if(outputs.begin(), outputs.end(), [&](const auto& output) {
-            return !output.selected || ready_ids.find(output.id) == ready_ids.end();
-        }),
-        outputs.end());
+    std::vector<OutputDevice> outputs;
+    outputs.reserve(registry_outputs.size());
+
+    size_t selected_count = 0;
+    for (const auto& output : registry_outputs) {
+        if (!output.selected) {
+            continue;
+        }
+
+        ++selected_count;
+        if (ready_ids.find(output.id) != ready_ids.end()) {
+            outputs.push_back(output);
+        }
+    }
+
+    if (selected_count != 0 && outputs.empty()) {
+        throw std::runtime_error("No selected AirPlay output has a ready session.");
+    }
 
     const auto packets = scheduler_.schedule(
         outputs,

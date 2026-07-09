@@ -3,6 +3,7 @@
 #include "../transport.h"
 #include "sync_clock.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -16,6 +17,7 @@ public:
 
     void start_discovery();
     void stop_discovery();
+    void refresh_discovery(std::chrono::milliseconds timeout = std::chrono::milliseconds(1500));
     std::vector<OutputDevice> list_outputs();
 
     void select_outputs(const std::vector<std::string>& ids);
@@ -41,4 +43,3 @@ private:
 };
 
 }  // namespace multiroom
-

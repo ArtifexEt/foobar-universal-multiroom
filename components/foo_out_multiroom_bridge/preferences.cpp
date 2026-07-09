@@ -5,10 +5,7 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
-#include <cstdlib>
 #include <cwctype>
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -107,24 +104,6 @@ std::wstring trim(std::wstring text) {
         --last;
     }
     return text.substr(first, last - first);
-}
-
-bool parse_port(const std::wstring& text, std::uint16_t& port) {
-    if (text.empty()) return false;
-
-    wchar_t* end = nullptr;
-    errno = 0;
-    const unsigned long value = std::wcstoul(text.c_str(), &end, 10);
-    while (end != nullptr && std::iswspace(*end) != 0) {
-        ++end;
-    }
-
-    if (errno == ERANGE || end == text.c_str() || (end != nullptr && *end != L'\0') || value == 0 || value > 65535) {
-        return false;
-    }
-
-    port = static_cast<std::uint16_t>(value);
-    return true;
 }
 
 std::string narrow_pin(const std::wstring& text) {
@@ -273,10 +252,6 @@ private:
     }
 
     void populate_status_page() {
-        HWND port = find_dlg_item(wnd_, idManualPort);
-        if (port != nullptr && ::GetWindowTextLengthW(port) == 0) {
-            ::SetWindowTextW(port, L"7000");
-        }
         configure_speaker_list();
     }
 
@@ -355,51 +330,11 @@ private:
             ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
             return TRUE;
         }
-        if (id == idManualAddButton) {
-            return add_manual_airplay_output();
-        }
         if (id == idPairButton) {
             return pair_selected_airplay_output();
         }
 
         return FALSE;
-    }
-
-    INT_PTR add_manual_airplay_output() {
-        auto name = trim(text_from_item(wnd_, idManualName));
-        auto host = trim(text_from_item(wnd_, idManualHost));
-        auto port_text = trim(text_from_item(wnd_, idManualPort));
-
-        if (host.empty()) {
-            ::MessageBoxW(wnd_, L"Enter a host or IP address.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
-            if (HWND host_control = find_dlg_item(wnd_, idManualHost); host_control != nullptr) {
-                ::SetFocus(host_control);
-            }
-            return TRUE;
-        }
-
-        std::uint16_t port = 0;
-        if (!parse_port(port_text, port)) {
-            ::MessageBoxW(wnd_, L"Enter a port from 1 to 65535.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
-            if (HWND port_control = find_dlg_item(wnd_, idManualPort); port_control != nullptr) {
-                ::SetFocus(port_control);
-                ::SendMessageW(port_control, EM_SETSEL, 0, -1);
-            }
-            return TRUE;
-        }
-
-        const bool added = MultiroomComponentState::instance().add_manual_airplay_output(name, host, port);
-        update_status_page();
-        if (added) {
-            if (HWND name_control = find_dlg_item(wnd_, idManualName); name_control != nullptr) {
-                ::SetWindowTextW(name_control, L"");
-            }
-            if (HWND host_control = find_dlg_item(wnd_, idManualHost); host_control != nullptr) {
-                ::SetWindowTextW(host_control, L"");
-                ::SetFocus(host_control);
-            }
-        }
-        return TRUE;
     }
 
     INT_PTR pair_selected_airplay_output() {

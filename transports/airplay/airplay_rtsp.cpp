@@ -1553,96 +1553,14 @@ AirPlayPairingResult AirPlayRtspControlClient::pair(const OutputDevice& output, 
 }
 
 AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& output, const PcmFormat& format) {
-    const auto open_legacy_l16 = [&](std::unique_ptr<Connection> connection) {
-        connection->connect_to(output.endpoint_host, output.endpoint_port);
-
-        const auto info_response = connection->request_success("GET", "/info");
-        const auto stream_uri = make_stream_uri(output);
-        connection->set_stream_uri(stream_uri);
-        const auto sdp = make_announce_sdp(output, format);
-        connection->request_success(
-            "ANNOUNCE",
-            stream_uri,
-            {
-                {"Content-Type", "application/sdp"},
-            },
-            sdp);
-
-        connection->bind_transport_ports();
-        const auto local_ports = connection->local_udp_ports().to_transport_ports();
-        const auto transport_header =
-            "RTP/AVP/UDP;unicast;mode=record;client_port=" +
-            std::to_string(local_ports.local_data_port) + "-" + std::to_string(local_ports.local_control_port) +
-            ";control_port=" + std::to_string(local_ports.local_control_port) +
-            ";timing_port=" + std::to_string(local_ports.local_timing_port);
-
-        const auto setup_response = connection->request_success(
-            "SETUP",
-            stream_uri + "/streamid=0",
-            {
-                {"Transport", transport_header},
-            });
-
-        auto rtsp_session_id = session_id_from_header(setup_response.header("Session"));
-        if (rtsp_session_id.empty()) {
-            rtsp_session_id = session_id_from_header(info_response.header("Session"));
-        }
-        if (rtsp_session_id.empty()) {
-            throw std::runtime_error("AirPlay RTSP SETUP did not return a session id.");
-        }
-
-        connection->request_success(
-            "RECORD",
-            stream_uri,
-            {
-                {"Range", "npt=0-"},
-                {"RTP-Info", "seq=0;rtptime=0"},
-                {"Session", rtsp_session_id},
-            });
-
-        const auto transport_parameters = parse_transport_parameters(setup_response.header("Transport"));
-        const auto server_data_port = transport_port(transport_parameters, "server_port");
-        if (server_data_port == 0) {
-            throw std::runtime_error("AirPlay RTSP SETUP did not return a server RTP data port.");
-        }
-        connection->set_remote_data_endpoint(server_data_port);
-
-        AirPlayNegotiatedSession session;
-        session.rtsp_session_id = rtsp_session_id;
-        session.stream_uri = stream_uri;
-        session.server_name = info_response.header("Server");
-        session.supported_methods = {"GET", "ANNOUNCE", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
-        session.ports = local_ports;
-        session.ports.server_data_port = server_data_port;
-        session.ports.server_control_port = transport_port(transport_parameters, "control_port");
-        session.ports.server_timing_port = transport_port(transport_parameters, "timing_port");
-
-        connections_[output.id] = std::move(connection);
-        return session;
-    };
-
-    if (output.supports_airplay2) {
-        try {
-            auto connection = std::make_unique<Connection>();
-            auto session = connection->open_airplay2_transient(output, format, load_pairing_credentials(output.id));
-            connections_[output.id] = std::move(connection);
-            return session;
-        } catch (const std::exception& airplay2_error) {
-            if (!output.supports_legacy_l16) {
-                throw;
-            }
-
-            try {
-                return open_legacy_l16(std::make_unique<Connection>());
-            } catch (const std::exception& legacy_error) {
-                throw std::runtime_error(
-                    std::string("AirPlay 2 setup failed: ") + airplay2_error.what() +
-                    "; legacy L16 fallback failed: " + legacy_error.what());
-            }
-        }
+    if (!output.supports_airplay2) {
+        throw std::runtime_error("AirPlay 2 is required for streaming: " + output.id);
     }
 
-    return open_legacy_l16(std::make_unique<Connection>());
+    auto connection = std::make_unique<Connection>();
+    auto session = connection->open_airplay2_transient(output, format, load_pairing_credentials(output.id));
+    connections_[output.id] = std::move(connection);
+    return session;
 }
 
 void AirPlayRtspControlClient::send_audio(

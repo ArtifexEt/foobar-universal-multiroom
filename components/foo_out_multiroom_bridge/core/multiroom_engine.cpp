@@ -15,6 +15,10 @@ void MultiroomEngine::stop_discovery() {
     transport_.stop_discovery();
 }
 
+void MultiroomEngine::refresh_discovery(std::chrono::milliseconds timeout) {
+    transport_.refresh_discovery(timeout);
+}
+
 std::vector<OutputDevice> MultiroomEngine::list_outputs() {
     return transport_.list_outputs();
 }
@@ -97,4 +101,3 @@ void MultiroomEngine::validate_format(const PcmFormat& format) {
 }
 
 }  // namespace multiroom
-

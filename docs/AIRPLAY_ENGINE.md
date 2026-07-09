@@ -21,10 +21,10 @@ select, authenticate, synchronize, and stream to speakers by itself.
 - AirPlay 2 MVP starts with transient HAP pair-setup for receivers that accept
   it, encrypted control framing, binary-plist session/stream setup, and
   encrypted realtime ALAC RTP.
-- Stored-credential pair-verify and on-screen PIN pairing are the next auth
-  layer, not a dependency on OwnTone or another runtime server.
+- Stored-credential pair-verify and on-screen PIN pairing are native auth
+  layers, not a dependency on OwnTone or another runtime server.
 - The legacy RTSP/TCP `OPTIONS`, `ANNOUNCE`, `SETUP`, `RECORD`, `FLUSH`, and
-  `TEARDOWN` path is retained as a probe/fallback only.
+  `TEARDOWN` path is retained as a diagnostic probe only.
 - Keeps protocol details out of foobar UI code.
 
 `encoder`

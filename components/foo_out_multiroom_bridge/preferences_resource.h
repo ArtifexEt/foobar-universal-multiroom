@@ -10,10 +10,6 @@
 #define idAboutVersion            1004
 #define idSupportButton           1005
 #define idGitHubButton            1006
-#define idManualName              1007
-#define idManualHost              1008
-#define idManualPort              1009
-#define idManualAddButton         1010
 #define idSpeakerList             1011
 #define idPairPin                 1012
 #define idPairButton              1013

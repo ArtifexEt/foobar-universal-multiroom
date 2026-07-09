@@ -504,14 +504,21 @@ std::string ipv4_address_from_dns_service(const IP4_ADDRESS* address) {
     return inet_ntop(AF_INET, &ipv4, text, sizeof(text)) == nullptr ? std::string{} : std::string{text};
 }
 
+bool has_endpoint(const OutputDevice& device) {
+    return !device.endpoint_host.empty() && device.endpoint_port != 0;
+}
+
 void merge_device(OutputDevice& target, const OutputDevice& candidate) {
+    const bool prefer_candidate_endpoint =
+        candidate.supports_airplay2 && has_endpoint(candidate);
+
     if (target.name.empty()) {
         target.name = candidate.name;
     }
-    if (target.endpoint_host.empty() && !candidate.endpoint_host.empty()) {
+    if ((prefer_candidate_endpoint || target.endpoint_host.empty()) && !candidate.endpoint_host.empty()) {
         target.endpoint_host = candidate.endpoint_host;
     }
-    if (target.endpoint_port == 0 && candidate.endpoint_port != 0) {
+    if ((prefer_candidate_endpoint || target.endpoint_port == 0) && candidate.endpoint_port != 0) {
         target.endpoint_port = candidate.endpoint_port;
     }
 

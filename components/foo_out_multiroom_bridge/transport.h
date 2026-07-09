@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <string>
 #include <vector>
@@ -50,6 +51,7 @@ public:
 
     virtual void start_discovery() = 0;
     virtual void stop_discovery() = 0;
+    virtual void refresh_discovery(std::chrono::milliseconds timeout = std::chrono::milliseconds(1500)) = 0;
     virtual std::vector<OutputDevice> list_outputs() = 0;
     virtual void set_enabled_outputs(const std::vector<std::string>& ids) = 0;
     virtual void set_output_volume(const std::string& id, int volume) = 0;
