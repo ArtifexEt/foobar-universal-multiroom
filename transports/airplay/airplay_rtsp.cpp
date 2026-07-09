@@ -897,12 +897,12 @@ public:
             throw std::logic_error("Cannot flush AirPlay stream before stream URI is known.");
         }
 
-        request_success(
+        static_cast<void>(request(
             "FLUSH",
             stream_uri_,
             {
                 {"Session", rtsp_session_id},
-            });
+            }));
     }
 
     AirPlayNegotiatedSession open_airplay2_transient(

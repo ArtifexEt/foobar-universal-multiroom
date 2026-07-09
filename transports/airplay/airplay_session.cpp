@@ -121,6 +121,7 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
             session.transport_ports = negotiated.ports;
             session.phase = AirPlaySessionPhase::Ready;
             session.open = true;
+            control_client_->set_volume(session.output_id, session.rtsp_session_id, output.volume);
             ++ready_count;
         } catch (const std::exception& e) {
             session.phase = AirPlaySessionPhase::Failed;
