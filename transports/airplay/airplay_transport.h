@@ -19,7 +19,7 @@ public:
 
     void start_discovery() override;
     void stop_discovery() override;
-    void refresh_discovery(std::chrono::milliseconds timeout = std::chrono::milliseconds(1500));
+    void refresh_discovery(std::chrono::milliseconds timeout = std::chrono::milliseconds(1500)) override;
     std::vector<OutputDevice> list_outputs() override;
     AirPlayPairingResult pair_output(const std::string& id, const std::string& pin);
     void set_enabled_outputs(const std::vector<std::string>& ids) override;

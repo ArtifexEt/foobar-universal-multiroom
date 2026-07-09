@@ -30,6 +30,7 @@ bool expect(bool condition, const std::string& message) {
 void print_capabilities() {
     const std::vector<TransportCapability> capabilities = {
         {"list_outputs", true},
+        {"refresh_discovery", true},
         {"set_enabled_outputs", true},
         {"set_output_volume", true},
         {"set_output_offset_ms", true},
@@ -219,6 +220,48 @@ bool exercise_no_selected_outputs_sink() {
     return ok;
 }
 
+bool exercise_failed_reselection_does_not_drop_pcm() {
+    bool ok = true;
+
+    auto control_client = std::make_shared<SelectiveFailingControlClient>(std::set<std::string>{"kitchen"});
+    multiroom::airplay::AirPlayTransport transport(control_client);
+    multiroom::MultiroomEngine engine(transport);
+    engine.start_discovery();
+    transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7400));
+    transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7401));
+
+    engine.select_outputs({"living-room"});
+    engine.open_stream({48000, 2, 16});
+    transport.connect_selected_outputs();
+
+    const std::vector<int16_t> silence(480);
+    engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+    ok &= expect(control_client->audio_output_ids().size() == 1 &&
+                 control_client->audio_output_ids().front() == "living-room",
+                 "initial selected output should receive PCM");
+
+    engine.select_outputs({"kitchen"});
+    bool connect_failed = false;
+    try {
+        transport.connect_selected_outputs();
+    } catch (const std::exception&) {
+        connect_failed = true;
+    }
+    ok &= expect(connect_failed, "failed reselection should report that no selected output opened");
+
+    bool write_failed = false;
+    try {
+        engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+    } catch (const std::exception&) {
+        write_failed = true;
+    }
+    ok &= expect(write_failed, "failed reselection should not silently drop PCM writes");
+    ok &= expect(control_client->audio_output_ids().size() == 1,
+                 "failed reselection should not send PCM to a stale ready session");
+
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -348,6 +391,7 @@ int main() {
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");
         ok &= exercise_partial_airplay_open_failure();
         ok &= exercise_no_selected_outputs_sink();
+        ok &= exercise_failed_reselection_does_not_drop_pcm();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {
