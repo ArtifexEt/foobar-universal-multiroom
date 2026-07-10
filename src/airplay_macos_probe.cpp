@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
 #include "../transports/airplay/airplay_transport.h"
 
 namespace {
@@ -59,13 +60,16 @@ struct DiscoveredService {
     std::map<std::string, std::string> txt;
 };
 
-void print_usage() {
+void print_usage(const char* program_name) {
+    const std::string program = program_name == nullptr || program_name[0] == '\0'
+        ? "MultiroomMacPlaybackTester"
+        : program_name;
     std::cout
         << "Usage:\n"
-        << "  MultiroomAirPlayMacProbe [--target name|id|first] [--timeout-ms n]\n"
+        << "  " << program << " [--target name|id|first] [--timeout-ms n]\n"
         << "                            [--duration-ms n] [--volume 0-100]\n"
         << "                            [--frequency hz] [--pin nnnn] [--require-speaker]\n"
-        << "  MultiroomAirPlayMacProbe --list-only [--timeout-ms n]\n";
+        << "  " << program << " --list-only [--timeout-ms n]\n";
 }
 
 int parse_int_arg(const std::string& text, const char* name) {
@@ -115,7 +119,7 @@ Options parse_options(int argc, char** argv) {
         } else if (arg == "--list-only") {
             options.list_only = true;
         } else if (arg == "--help" || arg == "-h") {
-            print_usage();
+            print_usage(argc > 0 ? argv[0] : nullptr);
             std::exit(EXIT_SUCCESS);
         } else {
             throw std::runtime_error("Unknown argument: " + arg);
@@ -800,18 +804,21 @@ bool run_audio_diagnostic(multiroom::airplay::AirPlayTransport& transport, const
         }
     }
 
-    transport.set_enabled_outputs(target_ids);
+    multiroom::MultiroomEngine engine(transport);
+
+    engine.select_outputs(target_ids);
     for (const auto& id : target_ids) {
-        transport.set_output_volume(id, options.volume);
+        engine.set_output_volume(id, options.volume);
     }
 
     const multiroom::PcmFormat format{44100, 2, 16};
-    transport.open_stream(format);
+    engine.open_stream(format);
     try {
         transport.connect_selected_outputs();
     } catch (const std::exception& e) {
         print_sessions(transport, "connect-failed");
         std::cerr << "FAIL connect: " << e.what() << "\n";
+        engine.stop();
         return false;
     }
     print_sessions(transport, "connected");
@@ -823,18 +830,18 @@ bool run_audio_diagnostic(multiroom::airplay::AirPlayTransport& transport, const
     try {
         while (std::chrono::steady_clock::now() < end) {
             auto pcm = make_tone_chunk(format.sample_rate, format.channels, frame_offset, options.frequency, 0.12);
-            transport.write_frames(pcm.data(), pcm.size() * sizeof(int16_t), frame_offset);
+            engine.write_interleaved_pcm(pcm.data(), pcm.size() * sizeof(int16_t));
             frame_offset += kFramesPerChunk;
             ++chunks;
             std::this_thread::sleep_for(std::chrono::milliseconds(
                 (kFramesPerChunk * 1000) / format.sample_rate));
         }
         queued_before_flush = transport.queued_packets().size();
-        transport.flush();
+        engine.flush();
     } catch (const std::exception& e) {
         print_sessions(transport, "write-failed");
         std::cerr << "FAIL write: " << e.what() << "\n";
-        transport.stop();
+        engine.stop();
         return false;
     }
 
@@ -843,7 +850,7 @@ bool run_audio_diagnostic(multiroom::airplay::AirPlayTransport& transport, const
               << " duration_ms=" << options.duration.count()
               << " frequency_hz=" << options.frequency
               << " volume=" << options.volume << "\n";
-    transport.stop();
+    engine.stop();
     return chunks > 0 && queued_before_flush > 0;
 }
 
