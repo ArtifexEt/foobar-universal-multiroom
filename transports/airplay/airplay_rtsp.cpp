@@ -1014,10 +1014,7 @@ public:
             keys = derive_airplay2_encrypted_keys(shared_secret);
         }
 
-        auto audio_key = shared_secret;
-        if (audio_key.size() > 32) {
-            audio_key.resize(32);
-        }
+        auto audio_key = keys.event_write;
         if (audio_key.size() != 32) {
             throw std::runtime_error("AirPlay 2 pairing did not produce a usable audio key.");
         }
