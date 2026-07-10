@@ -49,7 +49,8 @@ constexpr uint8_t kRtpPayloadTypeAirPlay2Realtime = 0x60;
 constexpr size_t kAirPlay2FramesPerPacket = 352;
 constexpr size_t kAirPlay2Channels = 2;
 constexpr uint32_t kAirPlay2SampleRate = 44100;
-constexpr uint32_t kAirPlay2LatencyFrames = 22050 + 44100;
+constexpr uint32_t kAirPlay2LatencyFrames = 88200;
+constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
 
 #ifdef _WIN32
@@ -1263,8 +1264,8 @@ private:
         stream.emplace_back("controlPort", Value::integer(local_udp_ports().control.port()));
         stream.emplace_back("ct", Value::integer(2));
         stream.emplace_back("isMedia", Value::boolean(true));
-        stream.emplace_back("latencyMax", Value::integer(88200));
-        stream.emplace_back("latencyMin", Value::integer(11025));
+        stream.emplace_back("latencyMax", Value::integer(kAirPlay2LatencyFrames));
+        stream.emplace_back("latencyMin", Value::integer(kAirPlay2MinimumLatencyFrames));
         stream.emplace_back("shk", Value::bytes(ap2_audio_key_));
         stream.emplace_back("spf", Value::integer(static_cast<int64_t>(kAirPlay2FramesPerPacket)));
         stream.emplace_back("sr", Value::integer(44100));
