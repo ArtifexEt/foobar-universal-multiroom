@@ -1283,6 +1283,8 @@ private:
     AirPlay2Bytes run_transient_pair_setup() {
         using namespace fxchain::airplay;
 
+        static_cast<void>(http_post_success("/pair-pin-start", "application/octet-stream", {}));
+
         const auto m1 = tlv::encode({
             {tlv::Method, {0x00}},
             {tlv::State, {0x01}},
