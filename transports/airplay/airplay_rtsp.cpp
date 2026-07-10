@@ -48,7 +48,15 @@ constexpr uint8_t kRtpPayloadTypeDynamicL16 = 96;
 constexpr uint8_t kRtpPayloadTypeAirPlay2Realtime = 0x60;
 constexpr size_t kAirPlay2FramesPerPacket = 352;
 constexpr size_t kAirPlay2Channels = 2;
+constexpr uint32_t kAirPlay2SampleRate = 44100;
+constexpr uint32_t kAirPlay2LatencyFrames = 88200;
+constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
+
+enum class AirPlay2AudioEncoding {
+    Alac,
+    Pcm,
+};
 
 #ifdef _WIN32
 using socket_handle_t = SOCKET;
@@ -73,6 +81,26 @@ std::string trim_ascii(std::string value) {
         value.pop_back();
     }
     return value;
+}
+
+std::string map_value(const std::map<std::string, std::string>& values, const char* key) {
+    const auto it = values.find(key);
+    return it == values.end() ? std::string{} : it->second;
+}
+
+bool contains_lower(std::string value, const char* needle) {
+    value = lower_ascii(std::move(value));
+    return value.find(needle) != std::string::npos;
+}
+
+AirPlay2AudioEncoding preferred_airplay2_audio_encoding(const OutputDevice& output) {
+    if (contains_lower(map_value(output.txt_records, "manufacturer"), "linkplay") ||
+        contains_lower(map_value(output.txt_records, "model"), "wiim") ||
+        contains_lower(map_value(output.txt_records, "am"), "wiim") ||
+        contains_lower(output.name, "wiim")) {
+        return AirPlay2AudioEncoding::Pcm;
+    }
+    return AirPlay2AudioEncoding::Alac;
 }
 
 std::vector<std::string> split_methods(const std::string& methods) {
@@ -168,21 +196,6 @@ std::string colon_hex_text(const std::string& hex) {
     return stream.str();
 }
 
-uint64_t parse_hex_u64(const std::string& hex) {
-    uint64_t value = 0;
-    for (const char c : hex) {
-        value <<= 4;
-        if (c >= '0' && c <= '9') {
-            value |= static_cast<uint64_t>(c - '0');
-        } else if (c >= 'a' && c <= 'f') {
-            value |= static_cast<uint64_t>(c - 'a' + 10);
-        } else if (c >= 'A' && c <= 'F') {
-            value |= static_cast<uint64_t>(c - 'A' + 10);
-        }
-    }
-    return value;
-}
-
 uint64_t ntp_now() {
     using namespace std::chrono;
     constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
@@ -191,6 +204,14 @@ uint64_t ntp_now() {
     const auto fraction_ns = duration_cast<std::chrono::nanoseconds>(now - seconds).count();
     const auto fraction = (static_cast<unsigned long long>(fraction_ns) << 32) / 1000000000ULL;
     return ((static_cast<uint64_t>(seconds.count()) + kUnixToNtpSeconds) << 32) | fraction;
+}
+
+uint64_t ntp_to_rtp_timestamp(uint64_t ntp, uint32_t sample_rate) {
+    return ((ntp >> 16) * sample_rate) >> 16;
+}
+
+uint64_t rtp_timestamp_to_ntp(uint64_t rtp_timestamp, uint32_t sample_rate) {
+    return ((rtp_timestamp << 16) / sample_rate) << 16;
 }
 
 std::vector<uint8_t> hkdf_sha512(
@@ -272,6 +293,17 @@ std::vector<uint8_t> make_alac_uncompressed_frame(const void* frames, size_t byt
     if (filled > 0) {
         current = static_cast<uint8_t>(current << (8 - filled));
         out.push_back(current);
+    }
+    return out;
+}
+
+std::vector<uint8_t> make_airplay2_pcm_payload(const void* frames, size_t bytes) {
+    std::vector<uint8_t> out(kAirPlay2FramesPerPacket * kAirPlay2Channels * sizeof(int16_t), 0);
+    const auto samples_to_copy = std::min(kAirPlay2FramesPerPacket * kAirPlay2Channels, bytes / sizeof(int16_t));
+    const auto* input = static_cast<const uint8_t*>(frames);
+    for (size_t index = 0; index < samples_to_copy; ++index) {
+        out[index * 2] = input[index * 2 + 1];
+        out[index * 2 + 1] = input[index * 2];
     }
     return out;
 }
@@ -560,6 +592,23 @@ struct LocalUdpPorts {
     }
 };
 
+class AirPlay2StreamSetupRejected final : public std::runtime_error {
+public:
+    AirPlay2StreamSetupRejected(int status_code, const std::string& reason)
+        : std::runtime_error(
+              "AirPlay RTSP SETUP failed with status " +
+              std::to_string(status_code) +
+              (reason.empty() ? std::string{} : " " + reason))
+        , status_code_(status_code) {}
+
+    int status_code() const {
+        return status_code_;
+    }
+
+private:
+    int status_code_ = 0;
+};
+
 LocalUdpPorts bind_local_udp_ports() {
     return {
         UdpSocket::bind_ephemeral(),
@@ -772,19 +821,30 @@ public:
         remote_host_ = host;
         AddrInfoList addresses(host, port, SOCK_STREAM);
 
-        for (addrinfo* address = addresses.begin(); address != nullptr; address = address->ai_next) {
-            socket_handle_t candidate = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-            if (candidate == kInvalidSocket) {
-                continue;
-            }
+        const auto try_connect_family = [&](int family) {
+            for (addrinfo* address = addresses.begin(); address != nullptr; address = address->ai_next) {
+                if (family != AF_UNSPEC && address->ai_family != family) {
+                    continue;
+                }
 
-            if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
-                handle_ = candidate;
-                configure_timeouts();
-                return;
-            }
+                socket_handle_t candidate = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+                if (candidate == kInvalidSocket) {
+                    continue;
+                }
 
-            close_socket(candidate);
+                if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
+                    handle_ = candidate;
+                    configure_timeouts();
+                    return true;
+                }
+
+                close_socket(candidate);
+            }
+            return false;
+        };
+
+        if (try_connect_family(AF_INET) || try_connect_family(AF_UNSPEC)) {
+            return;
         }
 
         throw std::runtime_error("Could not connect to AirPlay endpoint: " + host + ":" + std::to_string(port));
@@ -856,25 +916,37 @@ public:
         }
 
         if (!ap2_audio_key_.empty()) {
-            const auto timestamp = static_cast<uint32_t>(packet.presentation_timestamp & 0xFFFFFFFFu);
+            ensure_airplay2_sync_started(packet.presentation_timestamp);
+            maybe_send_airplay2_sync(false, packet.presentation_timestamp);
+
+            const auto rtp_timestamp =
+                static_cast<uint32_t>((packet.presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
+            const auto rtp_sequence = next_rtp_sequence_++;
             auto header = make_rtp_header(
                 kRtpPayloadTypeAirPlay2Realtime,
                 ap2_first_audio_,
-                next_rtp_sequence_++,
-                timestamp,
+                rtp_sequence,
+                rtp_timestamp,
                 ap2_session_id_ == 0 ? kDefaultSsrc : ap2_session_id_);
             ap2_first_audio_ = false;
 
-            const auto alac = make_alac_uncompressed_frame(frames, bytes);
-            const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, alac);
+            const auto payload = ap2_audio_encoding_ == AirPlay2AudioEncoding::Pcm
+                ? make_airplay2_pcm_payload(frames, bytes)
+                : make_alac_uncompressed_frame(frames, bytes);
+            const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, payload);
             header.insert(header.end(), encrypted.begin(), encrypted.end());
             udp_ports_.data.send_to(remote_host_, remote_data_port_, header);
+            rtp_clock_initialized_ = true;
+            next_rtp_timestamp_ = rtp_timestamp + static_cast<uint32_t>(kAirPlay2FramesPerPacket);
             return;
         }
 
         const auto timestamp = static_cast<uint32_t>(packet.presentation_timestamp & 0xFFFFFFFFu);
+        const auto frame_count = static_cast<uint32_t>(bytes / (kAirPlay2Channels * sizeof(int16_t)));
         const auto rtp = make_rtp_l16_packet(next_rtp_sequence_++, timestamp, kDefaultSsrc, frames, bytes);
         udp_ports_.data.send_to(remote_host_, remote_data_port_, rtp);
+        rtp_clock_initialized_ = true;
+        next_rtp_timestamp_ = timestamp + frame_count;
     }
 
     void set_volume(const std::string& rtsp_session_id, int volume) {
@@ -897,23 +969,48 @@ public:
             throw std::logic_error("Cannot flush AirPlay stream before stream URI is known.");
         }
 
-        static_cast<void>(request(
-            "FLUSH",
-            stream_uri_,
-            {
+        auto headers = !ap2_audio_key_.empty()
+            ? ap2_headers({
+                {"Range", "npt=0-"},
+                {"RTP-Info", make_rtp_info_header()},
+                {"Session", "0"},
+            })
+            : std::map<std::string, std::string>{
+                {"RTP-Info", make_rtp_info_header()},
                 {"Session", rtsp_session_id},
-            }));
+            };
+
+        static_cast<void>(request("FLUSH", stream_uri_, std::move(headers)));
     }
 
     AirPlayNegotiatedSession open_airplay2_transient(
         const OutputDevice& output,
         const PcmFormat& format,
         const std::optional<AirPlayPairingCredentials>& credentials) {
+        const auto preferred_encoding = preferred_airplay2_audio_encoding(output);
+        try {
+            return open_airplay2_transient_with_encoding(output, format, credentials, preferred_encoding);
+        } catch (const AirPlay2StreamSetupRejected& e) {
+            if (e.status_code() != 400 || preferred_encoding == AirPlay2AudioEncoding::Pcm) {
+                throw;
+            }
+            close();
+            return open_airplay2_transient_with_encoding(output, format, credentials, AirPlay2AudioEncoding::Pcm);
+        }
+    }
+
+    AirPlayNegotiatedSession open_airplay2_transient_with_encoding(
+        const OutputDevice& output,
+        const PcmFormat& format,
+        const std::optional<AirPlayPairingCredentials>& credentials,
+        AirPlay2AudioEncoding audio_encoding) {
         if (format.sample_rate != 44100 || format.channels != 2 || format.bits_per_sample != 16) {
             throw std::invalid_argument("AirPlay 2 MVP currently requires 44.1 kHz stereo 16-bit PCM.");
         }
 
+        ap2_audio_encoding_ = audio_encoding;
         dacp_id_ = random_hex(8);
+        sender_device_id_ = random_hex(6);
         active_remote_ = std::to_string(random_u32());
         ap2_session_id_ = random_u32();
         if (ap2_session_id_ == 0) {
@@ -940,10 +1037,7 @@ public:
             keys = derive_airplay2_encrypted_keys(shared_secret);
         }
 
-        auto audio_key = shared_secret;
-        if (audio_key.size() > 32) {
-            audio_key.resize(32);
-        }
+        auto audio_key = keys.event_write;
         if (audio_key.size() != 32) {
             throw std::runtime_error("AirPlay 2 pairing did not produce a usable audio key.");
         }
@@ -961,42 +1055,50 @@ public:
         stream_uri_ = "rtsp://" + local_address_text() + "/" + std::to_string(ap2_session_id_);
         set_stream_uri(stream_uri_);
 
-        const auto session_body = make_ap2_session_setup_body();
-        const auto session_setup = request_success(
-            "SETUP",
-            stream_uri_,
-            ap2_headers({
-                {"Content-Type", "application/x-apple-binary-plist"},
-            }),
-            string_from_bytes(session_body));
+        AirPlayRtspResponse session_setup;
+        try {
+            const auto session_body = make_ap2_session_setup_body();
+            session_setup = request_success(
+                "SETUP",
+                stream_uri_,
+                ap2_setup_headers(),
+                string_from_bytes(session_body));
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("AirPlay 2 session SETUP failed: ") + e.what());
+        }
 
         const auto event_port = parse_ap2_event_port(session_setup.body);
         if (event_port != 0) {
             connect_event_channel(output.endpoint_host, event_port);
         }
 
-        const auto record_response = request(
-            "RECORD",
-            stream_uri_,
-            ap2_headers());
-        if (!record_response.successful()) {
-            // Some receivers still accept the stream SETUP after RECORD errors while they settle the event channel.
+        AirPlayRtspResponse stream_setup;
+        try {
+            const auto stream_body = make_ap2_stream_setup_body(audio_encoding);
+            stream_setup = request(
+                "SETUP",
+                stream_uri_,
+                ap2_setup_headers(),
+                string_from_bytes(stream_body));
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("AirPlay 2 stream SETUP failed: ") + e.what());
         }
-
-        const auto stream_body = make_ap2_stream_setup_body();
-        const auto stream_setup = request_success(
-            "SETUP",
-            stream_uri_,
-            ap2_headers({
-                {"Content-Type", "application/x-apple-binary-plist"},
-            }),
-            string_from_bytes(stream_body));
+        if (!stream_setup.successful()) {
+            throw AirPlay2StreamSetupRejected(stream_setup.status_code, stream_setup.reason);
+        }
 
         const auto stream_ports = parse_ap2_stream_ports(stream_setup.body);
         if (stream_ports.first == 0) {
             throw std::runtime_error("AirPlay 2 stream SETUP did not return a data port.");
         }
         remote_data_port_ = stream_ports.first;
+        remote_control_port_ = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
+        ap2_sync_started_ = false;
+
+        static_cast<void>(request_success(
+            "RECORD",
+            stream_uri_,
+            ap2_headers()));
 
         auto ports = local_udp_ports().to_transport_ports();
         ports.server_data_port = stream_ports.first;
@@ -1026,19 +1128,55 @@ public:
         event_handle_ = kInvalidSocket;
         close_socket(handle_);
         handle_ = kInvalidSocket;
+        reset_session_state();
 #ifdef _WIN32
         winsock_.reset();
 #endif
     }
 
 private:
+    void reset_session_state() {
+        next_cseq_ = 1;
+        next_rtp_sequence_ = 0;
+        next_rtp_timestamp_ = 0;
+        rtp_clock_initialized_ = false;
+        remote_data_port_ = 0;
+        remote_control_port_ = 0;
+        ap2_session_id_ = 0;
+        ap2_audio_nonce_ = 0;
+        ap2_sync_start_rtp_ = 0;
+        ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
+        ap2_first_audio_ = true;
+        ap2_sync_started_ = false;
+        ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
+        remote_host_.clear();
+        stream_uri_.clear();
+        dacp_id_.clear();
+        sender_device_id_.clear();
+        active_remote_.clear();
+        ap2_audio_key_.clear();
+        control_cipher_.reset();
+        event_cipher_.reset();
+        udp_ports_ = LocalUdpPorts{};
+    }
+
     std::map<std::string, std::string> ap2_headers(std::map<std::string, std::string> headers = {}) const {
         headers.emplace("User-Agent", "AirPlay/550.10");
         headers.emplace("DACP-ID", dacp_id_);
         headers.emplace("Active-Remote", active_remote_);
         headers.emplace("Client-Instance", dacp_id_);
-        headers.emplace("X-Apple-Client-Name", "FoobarUniversalMultiroom");
         return headers;
+    }
+
+    std::map<std::string, std::string> ap2_setup_headers() const {
+        return ap2_headers({
+            {"Content-Type", "application/x-apple-binary-plist"},
+        });
+    }
+
+    std::string make_rtp_info_header() const {
+        const auto timestamp = rtp_clock_initialized_ ? next_rtp_timestamp_ : uint32_t{};
+        return "seq=" + std::to_string(next_rtp_sequence_) + ";rtptime=" + std::to_string(timestamp);
     }
 
     AirPlayRtspResponse http_post_success(
@@ -1196,6 +1334,8 @@ private:
     AirPlay2Bytes run_transient_pair_setup() {
         using namespace fxchain::airplay;
 
+        static_cast<void>(http_post_success("/pair-pin-start", "application/octet-stream", {}));
+
         const auto m1 = tlv::encode({
             {tlv::Method, {0x00}},
             {tlv::State, {0x01}},
@@ -1243,49 +1383,40 @@ private:
     AirPlay2Bytes make_ap2_session_setup_body() const {
         using namespace fxchain::airplay::bplist;
 
-        const auto device_id = colon_hex_text(dacp_id_);
-        const auto mac_address = colon_hex_text(dacp_id_.substr(0, 12));
-        const auto peer_id = random_uuid_text();
-        const auto local_address = local_address_text();
-        const auto clock_id = static_cast<int64_t>(parse_hex_u64(dacp_id_));
-
-        Array addresses;
-        addresses.push_back(Value::str(local_address));
-
-        Dict timing_peer_info;
-        timing_peer_info.emplace_back("ID", Value::str(peer_id));
-        timing_peer_info.emplace_back("DeviceType", Value::integer(0));
-        timing_peer_info.emplace_back("ClockID", Value::integer(clock_id));
-        timing_peer_info.emplace_back("SupportsClockPortMatchingOverride", Value::boolean(false));
-        timing_peer_info.emplace_back("Addresses", Value::array(std::move(addresses)));
-
-        Array timing_peer_list;
-        timing_peer_list.push_back(Value::object(timing_peer_info));
-
+        const auto device_id = colon_hex_text(sender_device_id_);
         Dict dict;
-        dict.emplace_back("name", Value::str("FoobarUniversalMultiroom"));
         dict.emplace_back("deviceID", Value::str(device_id));
         dict.emplace_back("sessionUUID", Value::str(random_uuid_text()));
-        dict.emplace_back("timingProtocol", Value::str("PTP"));
-        dict.emplace_back("macAddress", Value::str(mac_address));
-        dict.emplace_back("groupUUID", Value::str(random_uuid_text()));
+        // Keep session timing aligned with the NTP timing worker and 0xD4 sync packets below.
+        dict.emplace_back("timingPort", Value::integer(local_udp_ports().timing.port()));
+        dict.emplace_back("timingProtocol", Value::str("NTP"));
+        dict.emplace_back("isMultiSelectAirPlay", Value::boolean(true));
         dict.emplace_back("groupContainsGroupLeader", Value::boolean(false));
-        dict.emplace_back("timingPeerInfo", Value::object(timing_peer_info));
-        dict.emplace_back("timingPeerList", Value::array(std::move(timing_peer_list)));
+        dict.emplace_back("macAddress", Value::str(device_id));
+        dict.emplace_back("model", Value::str("iPhone14,3"));
+        dict.emplace_back("name", Value::str("FoobarUniversalMultiroom"));
+        dict.emplace_back("osBuildVersion", Value::str("20F66"));
+        dict.emplace_back("osName", Value::str("iPhone OS"));
+        dict.emplace_back("osVersion", Value::str("16.5"));
+        dict.emplace_back("senderSupportsRelay", Value::boolean(false));
+        dict.emplace_back("sourceVersion", Value::str("690.7.1"));
+        dict.emplace_back("statsCollectionEnabled", Value::boolean(false));
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
     }
 
-    AirPlay2Bytes make_ap2_stream_setup_body() const {
+    AirPlay2Bytes make_ap2_stream_setup_body(AirPlay2AudioEncoding audio_encoding) const {
         using namespace fxchain::airplay::bplist;
 
         Dict stream;
-        stream.emplace_back("audioFormat", Value::integer(0x40000));
+        stream.emplace_back(
+            "audioFormat",
+            Value::integer(audio_encoding == AirPlay2AudioEncoding::Pcm ? 0x800 : 0x40000));
         stream.emplace_back("audioMode", Value::str("default"));
         stream.emplace_back("controlPort", Value::integer(local_udp_ports().control.port()));
-        stream.emplace_back("ct", Value::integer(2));
+        stream.emplace_back("ct", Value::integer(audio_encoding == AirPlay2AudioEncoding::Pcm ? 1 : 2));
         stream.emplace_back("isMedia", Value::boolean(true));
-        stream.emplace_back("latencyMax", Value::integer(88200));
-        stream.emplace_back("latencyMin", Value::integer(11025));
+        stream.emplace_back("latencyMax", Value::integer(kAirPlay2LatencyFrames));
+        stream.emplace_back("latencyMin", Value::integer(kAirPlay2MinimumLatencyFrames));
         stream.emplace_back("shk", Value::bytes(ap2_audio_key_));
         stream.emplace_back("spf", Value::integer(static_cast<int64_t>(kAirPlay2FramesPerPacket)));
         stream.emplace_back("sr", Value::integer(44100));
@@ -1327,6 +1458,46 @@ private:
             data_port == nullptr ? uint16_t{} : static_cast<uint16_t>(data_port->asInt()),
             control_port == nullptr ? uint16_t{} : static_cast<uint16_t>(control_port->asInt()),
         };
+    }
+
+    void ensure_airplay2_sync_started(uint64_t presentation_timestamp) {
+        if (ap2_sync_started_) {
+            return;
+        }
+
+        const auto now = ntp_now();
+        const auto now_rtp = ntp_to_rtp_timestamp(now, kAirPlay2SampleRate);
+        ap2_sync_start_rtp_ = now_rtp > presentation_timestamp ? now_rtp - presentation_timestamp : 0;
+        ap2_sync_started_ = true;
+        send_airplay2_sync_packet(true, presentation_timestamp);
+    }
+
+    void maybe_send_airplay2_sync(bool first, uint64_t presentation_timestamp) {
+        if (first || std::chrono::steady_clock::now() - ap2_last_sync_at_ >= std::chrono::seconds(1)) {
+            send_airplay2_sync_packet(first, presentation_timestamp);
+        }
+    }
+
+    void send_airplay2_sync_packet(bool first, uint64_t presentation_timestamp) {
+        if (remote_control_port_ == 0) {
+            return;
+        }
+
+        const auto rtp_timestamp =
+            static_cast<uint32_t>((presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
+        const auto ntp = rtp_timestamp_to_ntp(ap2_sync_start_rtp_ + presentation_timestamp, kAirPlay2SampleRate);
+
+        std::vector<uint8_t> sync;
+        sync.reserve(20);
+        sync.push_back(first ? 0x90 : 0x80);
+        sync.push_back(0xD4);
+        write_u16_be(sync, 0x0007);
+        write_u32_be(sync, rtp_timestamp - kAirPlay2LatencyFrames);
+        write_u32_be(sync, static_cast<uint32_t>(ntp >> 32));
+        write_u32_be(sync, static_cast<uint32_t>(ntp & 0xFFFFFFFFu));
+        write_u32_be(sync, rtp_timestamp);
+        udp_ports_.control.send_to(remote_host_, remote_control_port_, sync);
+        ap2_last_sync_at_ = std::chrono::steady_clock::now();
     }
 
     std::string local_address_text() const {
@@ -1620,13 +1791,21 @@ private:
     socket_handle_t handle_ = kInvalidSocket;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
+    uint32_t next_rtp_timestamp_ = 0;
+    bool rtp_clock_initialized_ = false;
     uint16_t remote_data_port_ = 0;
+    uint16_t remote_control_port_ = 0;
     uint32_t ap2_session_id_ = 0;
     uint64_t ap2_audio_nonce_ = 0;
+    uint64_t ap2_sync_start_rtp_ = 0;
+    AirPlay2AudioEncoding ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
     bool ap2_first_audio_ = true;
+    bool ap2_sync_started_ = false;
+    std::chrono::steady_clock::time_point ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
     std::string remote_host_;
     std::string stream_uri_;
     std::string dacp_id_;
+    std::string sender_device_id_;
     std::string active_remote_;
     AirPlay2Bytes ap2_audio_key_;
     std::unique_ptr<AirPlay2FrameCipher> control_cipher_;

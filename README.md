@@ -55,6 +55,9 @@ without changing the foobar UI.
   RTSP `SET_PARAMETER` volume updates.
 - The main foobar2000 volume is treated as a remote AirPlay master volume
   multiplier instead of digitally attenuating the PCM stream.
+- macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
+  for the portable core/AirPlay path that uses system Bonjour and sends a real
+  generated tone through `MultiroomEngine`.
 - Still missing before daily use: full encrypted event-channel handling,
   real-device validation, and timing hardening.
 
@@ -94,5 +97,22 @@ ctest --test-dir build -C Release --output-on-failure
 .\build\Release\MultiroomAirPlayAudioDiagnostics.exe --loopback-self-test
 ```
 
+On macOS, `MultiroomMacPlaybackTester` uses system Bonjour discovery and then
+exercises the same portable `MultiroomEngine` plus AirPlay transport path:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure
+
+./build/MultiroomMacPlaybackTester --list-only --timeout-ms 2500 --require-speaker
+./build/MultiroomMacPlaybackTester --target korytarz --duration-ms 5000 --volume 45 --require-speaker
+./build/MultiroomMacPlaybackTester --target wiim --duration-ms 5000 --volume 45 --require-speaker
+```
+
+`MultiroomAirPlayMacProbe` remains as a compatibility alias for the same tester
+source in current PR artifacts.
+
 GitHub Actions also downloads the foobar2000 SDK, builds the component with
-MSBuild, and packages `foo_out_multiroom_bridge.fb2k-component`.
+MSBuild, and packages `foo_out_multiroom_bridge.fb2k-component`. Pull request
+builds also publish `Foobar-Universal-Multiroom-macos-tester`.

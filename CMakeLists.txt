@@ -43,12 +43,31 @@ add_executable(MultiroomAirPlayAudioDiagnostics
     src/airplay_audio_diagnostics.cpp
 )
 
+if(APPLE)
+    add_executable(MultiroomAirPlayMacProbe
+        src/airplay_macos_probe.cpp
+    )
+    add_executable(MultiroomMacPlaybackTester
+        src/airplay_macos_probe.cpp
+    )
+endif()
+
 target_compile_features(MultiroomTransportContractProbe PRIVATE cxx_std_20)
 target_compile_features(MultiroomAirPlayNetworkProbe PRIVATE cxx_std_20)
 target_compile_features(MultiroomAirPlayAudioDiagnostics PRIVATE cxx_std_20)
+if(APPLE)
+    foreach(macos_tool IN ITEMS MultiroomAirPlayMacProbe MultiroomMacPlaybackTester)
+        target_compile_features(${macos_tool} PRIVATE cxx_std_20)
+    endforeach()
+endif()
 target_link_libraries(MultiroomTransportContractProbe PRIVATE MultiroomCore)
 target_link_libraries(MultiroomAirPlayNetworkProbe PRIVATE MultiroomCore)
 target_link_libraries(MultiroomAirPlayAudioDiagnostics PRIVATE MultiroomCore)
+if(APPLE)
+    foreach(macos_tool IN ITEMS MultiroomAirPlayMacProbe MultiroomMacPlaybackTester)
+        target_link_libraries(${macos_tool} PRIVATE MultiroomCore)
+    endforeach()
+endif()
 
 if(MSVC)
     target_compile_options(MultiroomCore PRIVATE /W4 /permissive-)
@@ -67,3 +86,6 @@ enable_testing()
 
 add_test(NAME transport_contract_probe COMMAND MultiroomTransportContractProbe)
 add_test(NAME airplay_audio_diagnostics_loopback COMMAND MultiroomAirPlayAudioDiagnostics --loopback-self-test)
+if(APPLE)
+    add_test(NAME macos_playback_tester_help COMMAND MultiroomMacPlaybackTester --help)
+endif()

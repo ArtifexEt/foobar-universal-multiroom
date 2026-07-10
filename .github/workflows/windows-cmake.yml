@@ -164,3 +164,43 @@ jobs:
           ) | Set-Content -Path release-notes.md -Encoding utf8
 
           gh release create $tag $asset $componentAsset --title $title --notes-file release-notes.md --target $env:GITHUB_SHA
+
+  macos-diagnostics:
+    name: Build macOS playback tester
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package macOS playback tester
+        run: |
+          mkdir -p dist
+          cp build/MultiroomMacPlaybackTester dist/
+          cp build/MultiroomAirPlayMacProbe dist/
+          cp docs/MACOS_TESTER.md dist/
+          ditto -c -k --keepParent dist Foobar-Universal-Multiroom-macos-tester.zip
+          ditto -c -k --keepParent dist/MultiroomAirPlayMacProbe Foobar-Universal-Multiroom-macos-airplay-probe.zip
+
+      - name: Upload macOS tester artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Foobar-Universal-Multiroom-macos-tester
+          path: Foobar-Universal-Multiroom-macos-tester.zip
+
+      - name: Upload macOS probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Foobar-Universal-Multiroom-macos-airplay-probe
+          path: Foobar-Universal-Multiroom-macos-airplay-probe.zip
