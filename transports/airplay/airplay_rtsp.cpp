@@ -1116,16 +1116,13 @@ private:
         headers.emplace("DACP-ID", dacp_id_);
         headers.emplace("Active-Remote", active_remote_);
         headers.emplace("Client-Instance", dacp_id_);
-        headers.emplace("X-Apple-Client-Name", "FoobarUniversalMultiroom");
         return headers;
     }
 
     std::map<std::string, std::string> ap2_setup_headers() const {
-        auto headers = ap2_headers({
+        return ap2_headers({
             {"Content-Type", "application/x-apple-binary-plist"},
         });
-        headers.emplace("X-Apple-StreamID", "1");
-        return headers;
     }
 
     AirPlayRtspResponse http_post_success(
