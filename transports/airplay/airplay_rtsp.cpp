@@ -1128,12 +1128,38 @@ public:
         event_handle_ = kInvalidSocket;
         close_socket(handle_);
         handle_ = kInvalidSocket;
+        reset_session_state();
 #ifdef _WIN32
         winsock_.reset();
 #endif
     }
 
 private:
+    void reset_session_state() {
+        next_cseq_ = 1;
+        next_rtp_sequence_ = 0;
+        next_rtp_timestamp_ = 0;
+        rtp_clock_initialized_ = false;
+        remote_data_port_ = 0;
+        remote_control_port_ = 0;
+        ap2_session_id_ = 0;
+        ap2_audio_nonce_ = 0;
+        ap2_sync_start_rtp_ = 0;
+        ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
+        ap2_first_audio_ = true;
+        ap2_sync_started_ = false;
+        ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
+        remote_host_.clear();
+        stream_uri_.clear();
+        dacp_id_.clear();
+        sender_device_id_.clear();
+        active_remote_.clear();
+        ap2_audio_key_.clear();
+        control_cipher_.reset();
+        event_cipher_.reset();
+        udp_ports_ = LocalUdpPorts{};
+    }
+
     std::map<std::string, std::string> ap2_headers(std::map<std::string, std::string> headers = {}) const {
         headers.emplace("User-Agent", "AirPlay/550.10");
         headers.emplace("DACP-ID", dacp_id_);
