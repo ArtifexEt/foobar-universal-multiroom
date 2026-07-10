@@ -1049,14 +1049,6 @@ public:
             connect_event_channel(output.endpoint_host, event_port);
         }
 
-        const auto record_response = request(
-            "RECORD",
-            stream_uri_,
-            ap2_headers());
-        if (!record_response.successful()) {
-            // Some receivers still accept the stream SETUP after RECORD errors while they settle the event channel.
-        }
-
         AirPlayRtspResponse stream_setup;
         try {
             const auto stream_body = make_ap2_stream_setup_body(audio_encoding);
@@ -1079,6 +1071,11 @@ public:
         remote_data_port_ = stream_ports.first;
         remote_control_port_ = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
         ap2_sync_started_ = false;
+
+        static_cast<void>(request_success(
+            "RECORD",
+            stream_uri_,
+            ap2_headers()));
 
         auto ports = local_udp_ports().to_transport_ports();
         ports.server_data_port = stream_ports.first;
