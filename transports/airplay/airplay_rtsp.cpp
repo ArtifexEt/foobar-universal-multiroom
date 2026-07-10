@@ -83,6 +83,26 @@ std::string trim_ascii(std::string value) {
     return value;
 }
 
+std::string map_value(const std::map<std::string, std::string>& values, const char* key) {
+    const auto it = values.find(key);
+    return it == values.end() ? std::string{} : it->second;
+}
+
+bool contains_lower(std::string value, const char* needle) {
+    value = lower_ascii(std::move(value));
+    return value.find(needle) != std::string::npos;
+}
+
+AirPlay2AudioEncoding preferred_airplay2_audio_encoding(const OutputDevice& output) {
+    if (contains_lower(map_value(output.txt_records, "manufacturer"), "linkplay") ||
+        contains_lower(map_value(output.txt_records, "model"), "wiim") ||
+        contains_lower(map_value(output.txt_records, "am"), "wiim") ||
+        contains_lower(output.name, "wiim")) {
+        return AirPlay2AudioEncoding::Pcm;
+    }
+    return AirPlay2AudioEncoding::Alac;
+}
+
 std::vector<std::string> split_methods(const std::string& methods) {
     std::vector<std::string> result;
     std::stringstream stream(methods);
@@ -944,10 +964,11 @@ public:
         const OutputDevice& output,
         const PcmFormat& format,
         const std::optional<AirPlayPairingCredentials>& credentials) {
+        const auto preferred_encoding = preferred_airplay2_audio_encoding(output);
         try {
-            return open_airplay2_transient_with_encoding(output, format, credentials, AirPlay2AudioEncoding::Alac);
+            return open_airplay2_transient_with_encoding(output, format, credentials, preferred_encoding);
         } catch (const AirPlay2StreamSetupRejected& e) {
-            if (e.status_code() != 400) {
+            if (e.status_code() != 400 || preferred_encoding == AirPlay2AudioEncoding::Pcm) {
                 throw;
             }
             close();
