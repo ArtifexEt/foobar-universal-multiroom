@@ -21,7 +21,6 @@
 #include <ctime>
 #include <cstring>
 #include <iomanip>
-#include <iostream>
 #include <limits>
 #include <atomic>
 #include <thread>
@@ -146,23 +145,6 @@ std::vector<uint8_t> bytes_from_string(const std::string& value) {
 
 std::string string_from_bytes(const std::vector<uint8_t>& bytes) {
     return std::string(bytes.begin(), bytes.end());
-}
-
-std::string bytes_hex_text(const std::string& bytes) {
-    static constexpr char kHex[] = "0123456789ABCDEF";
-    std::string result;
-    result.reserve(bytes.size() * 2);
-    for (const auto byte : bytes) {
-        const auto value = static_cast<unsigned char>(byte);
-        result.push_back(kHex[(value >> 4) & 0x0F]);
-        result.push_back(kHex[value & 0x0F]);
-    }
-    return result;
-}
-
-bool rtsp_trace_enabled() {
-    const char* value = std::getenv("MULTIROOM_AIRPLAY_RTSP_TRACE");
-    return value != nullptr && value[0] != '\0' && std::string(value) != "0";
 }
 
 uint32_t random_u32() {
@@ -656,45 +638,6 @@ std::string format_request(const RtspRequest& request) {
     return stream.str();
 }
 
-void trace_rtsp_request(const RtspRequest& request) {
-    if (!rtsp_trace_enabled()) {
-        return;
-    }
-    std::cerr << "AIRPLAY_TRACE => " << request.method << ' ' << request.uri << "\n";
-    for (const auto& [name, value] : request.headers) {
-        std::cerr << "AIRPLAY_TRACE => header " << name << ": " << value << "\n";
-    }
-    std::cerr << "AIRPLAY_TRACE => body_len " << request.body.size() << "\n";
-    if (!request.body.empty()) {
-        std::cerr << "AIRPLAY_TRACE => body_hex " << bytes_hex_text(request.body) << "\n";
-    }
-}
-
-void trace_http_request(const std::string& uri, const std::string& body) {
-    if (!rtsp_trace_enabled()) {
-        return;
-    }
-    std::cerr << "AIRPLAY_TRACE => POST " << uri << "\n";
-    std::cerr << "AIRPLAY_TRACE => body_len " << body.size() << "\n";
-    if (!body.empty()) {
-        std::cerr << "AIRPLAY_TRACE => body_hex " << bytes_hex_text(body) << "\n";
-    }
-}
-
-void trace_response(const AirPlayRtspResponse& response) {
-    if (!rtsp_trace_enabled()) {
-        return;
-    }
-    std::cerr << "AIRPLAY_TRACE <= status " << response.status_code << ' ' << response.reason << "\n";
-    for (const auto& [name, value] : response.headers) {
-        std::cerr << "AIRPLAY_TRACE <= header " << name << ": " << value << "\n";
-    }
-    std::cerr << "AIRPLAY_TRACE <= body_len " << response.body.size() << "\n";
-    if (!response.body.empty()) {
-        std::cerr << "AIRPLAY_TRACE <= body_hex " << bytes_hex_text(response.body) << "\n";
-    }
-}
-
 uint16_t parse_u16(const std::string& value) {
     const auto parsed = std::strtoul(value.c_str(), nullptr, 10);
     if (parsed > 65535) {
@@ -909,11 +852,8 @@ public:
 
     AirPlayRtspResponse exchange(const RtspRequest& request) {
         const auto bytes = format_request(request);
-        trace_rtsp_request(request);
         send_all(bytes);
-        auto response = read_response();
-        trace_response(response);
-        return response;
+        return read_response();
     }
 
     AirPlayRtspResponse request(
@@ -1234,10 +1174,8 @@ private:
 
         AirPlayRtspResponse response;
         try {
-            trace_http_request(uri, string_from_bytes(body));
             send_all(request.str());
             response = read_response();
-            trace_response(response);
         } catch (const std::exception& e) {
             throw std::runtime_error("AirPlay 2 HTTP " + uri + " failed: " + e.what());
         }
