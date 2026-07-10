@@ -94,5 +94,14 @@ ctest --test-dir build -C Release --output-on-failure
 .\build\Release\MultiroomAirPlayAudioDiagnostics.exe --loopback-self-test
 ```
 
+On macOS, the diagnostics-only `MultiroomAirPlayMacProbe` target uses system
+Bonjour discovery and then exercises the same AirPlay transport path:
+
+```bash
+./MultiroomAirPlayMacProbe --list-only --timeout-ms 2500 --require-speaker
+./MultiroomAirPlayMacProbe --target korytarz --duration-ms 5000 --volume 45 --require-speaker
+./MultiroomAirPlayMacProbe --target wiim --duration-ms 5000 --volume 45 --require-speaker
+```
+
 GitHub Actions also downloads the foobar2000 SDK, builds the component with
 MSBuild, and packages `foo_out_multiroom_bridge.fb2k-component`.

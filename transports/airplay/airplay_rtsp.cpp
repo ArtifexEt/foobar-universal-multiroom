@@ -48,6 +48,8 @@ constexpr uint8_t kRtpPayloadTypeDynamicL16 = 96;
 constexpr uint8_t kRtpPayloadTypeAirPlay2Realtime = 0x60;
 constexpr size_t kAirPlay2FramesPerPacket = 352;
 constexpr size_t kAirPlay2Channels = 2;
+constexpr uint32_t kAirPlay2SampleRate = 44100;
+constexpr uint32_t kAirPlay2LatencyFrames = 22050 + 44100;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
 
 #ifdef _WIN32
@@ -168,21 +170,6 @@ std::string colon_hex_text(const std::string& hex) {
     return stream.str();
 }
 
-uint64_t parse_hex_u64(const std::string& hex) {
-    uint64_t value = 0;
-    for (const char c : hex) {
-        value <<= 4;
-        if (c >= '0' && c <= '9') {
-            value |= static_cast<uint64_t>(c - '0');
-        } else if (c >= 'a' && c <= 'f') {
-            value |= static_cast<uint64_t>(c - 'a' + 10);
-        } else if (c >= 'A' && c <= 'F') {
-            value |= static_cast<uint64_t>(c - 'A' + 10);
-        }
-    }
-    return value;
-}
-
 uint64_t ntp_now() {
     using namespace std::chrono;
     constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
@@ -191,6 +178,14 @@ uint64_t ntp_now() {
     const auto fraction_ns = duration_cast<std::chrono::nanoseconds>(now - seconds).count();
     const auto fraction = (static_cast<unsigned long long>(fraction_ns) << 32) / 1000000000ULL;
     return ((static_cast<uint64_t>(seconds.count()) + kUnixToNtpSeconds) << 32) | fraction;
+}
+
+uint64_t ntp_to_rtp_timestamp(uint64_t ntp, uint32_t sample_rate) {
+    return ((ntp >> 16) * sample_rate) >> 16;
+}
+
+uint64_t rtp_timestamp_to_ntp(uint64_t rtp_timestamp, uint32_t sample_rate) {
+    return ((rtp_timestamp << 16) / sample_rate) << 16;
 }
 
 std::vector<uint8_t> hkdf_sha512(
@@ -856,12 +851,16 @@ public:
         }
 
         if (!ap2_audio_key_.empty()) {
-            const auto timestamp = static_cast<uint32_t>(packet.presentation_timestamp & 0xFFFFFFFFu);
+            ensure_airplay2_sync_started(packet.presentation_timestamp);
+            maybe_send_airplay2_sync(false, packet.presentation_timestamp);
+
+            const auto rtp_timestamp =
+                static_cast<uint32_t>((packet.presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
             auto header = make_rtp_header(
                 kRtpPayloadTypeAirPlay2Realtime,
                 ap2_first_audio_,
                 next_rtp_sequence_++,
-                timestamp,
+                rtp_timestamp,
                 ap2_session_id_ == 0 ? kDefaultSsrc : ap2_session_id_);
             ap2_first_audio_ = false;
 
@@ -997,6 +996,8 @@ public:
             throw std::runtime_error("AirPlay 2 stream SETUP did not return a data port.");
         }
         remote_data_port_ = stream_ports.first;
+        remote_control_port_ = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
+        ap2_sync_started_ = false;
 
         auto ports = local_udp_ports().to_transport_ports();
         ports.server_data_port = stream_ports.first;
@@ -1244,34 +1245,12 @@ private:
         using namespace fxchain::airplay::bplist;
 
         const auto device_id = colon_hex_text(dacp_id_);
-        const auto mac_address = colon_hex_text(dacp_id_.substr(0, 12));
-        const auto peer_id = random_uuid_text();
-        const auto local_address = local_address_text();
-        const auto clock_id = static_cast<int64_t>(parse_hex_u64(dacp_id_));
-
-        Array addresses;
-        addresses.push_back(Value::str(local_address));
-
-        Dict timing_peer_info;
-        timing_peer_info.emplace_back("ID", Value::str(peer_id));
-        timing_peer_info.emplace_back("DeviceType", Value::integer(0));
-        timing_peer_info.emplace_back("ClockID", Value::integer(clock_id));
-        timing_peer_info.emplace_back("SupportsClockPortMatchingOverride", Value::boolean(false));
-        timing_peer_info.emplace_back("Addresses", Value::array(std::move(addresses)));
-
-        Array timing_peer_list;
-        timing_peer_list.push_back(Value::object(timing_peer_info));
-
         Dict dict;
-        dict.emplace_back("name", Value::str("FoobarUniversalMultiroom"));
         dict.emplace_back("deviceID", Value::str(device_id));
         dict.emplace_back("sessionUUID", Value::str(random_uuid_text()));
-        dict.emplace_back("timingProtocol", Value::str("PTP"));
-        dict.emplace_back("macAddress", Value::str(mac_address));
-        dict.emplace_back("groupUUID", Value::str(random_uuid_text()));
-        dict.emplace_back("groupContainsGroupLeader", Value::boolean(false));
-        dict.emplace_back("timingPeerInfo", Value::object(timing_peer_info));
-        dict.emplace_back("timingPeerList", Value::array(std::move(timing_peer_list)));
+        // Keep session timing aligned with the NTP timing worker and 0xD4 sync packets below.
+        dict.emplace_back("timingPort", Value::integer(local_udp_ports().timing.port()));
+        dict.emplace_back("timingProtocol", Value::str("NTP"));
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
     }
 
@@ -1327,6 +1306,46 @@ private:
             data_port == nullptr ? uint16_t{} : static_cast<uint16_t>(data_port->asInt()),
             control_port == nullptr ? uint16_t{} : static_cast<uint16_t>(control_port->asInt()),
         };
+    }
+
+    void ensure_airplay2_sync_started(uint64_t presentation_timestamp) {
+        if (ap2_sync_started_) {
+            return;
+        }
+
+        const auto now = ntp_now();
+        const auto now_rtp = ntp_to_rtp_timestamp(now, kAirPlay2SampleRate);
+        ap2_sync_start_rtp_ = now_rtp > presentation_timestamp ? now_rtp - presentation_timestamp : 0;
+        ap2_sync_started_ = true;
+        send_airplay2_sync_packet(true, presentation_timestamp);
+    }
+
+    void maybe_send_airplay2_sync(bool first, uint64_t presentation_timestamp) {
+        if (first || std::chrono::steady_clock::now() - ap2_last_sync_at_ >= std::chrono::seconds(1)) {
+            send_airplay2_sync_packet(first, presentation_timestamp);
+        }
+    }
+
+    void send_airplay2_sync_packet(bool first, uint64_t presentation_timestamp) {
+        if (remote_control_port_ == 0) {
+            return;
+        }
+
+        const auto rtp_timestamp =
+            static_cast<uint32_t>((presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
+        const auto ntp = rtp_timestamp_to_ntp(ap2_sync_start_rtp_ + presentation_timestamp, kAirPlay2SampleRate);
+
+        std::vector<uint8_t> sync;
+        sync.reserve(20);
+        sync.push_back(first ? 0x90 : 0x80);
+        sync.push_back(0xD4);
+        write_u16_be(sync, 0x0007);
+        write_u32_be(sync, rtp_timestamp - kAirPlay2LatencyFrames);
+        write_u32_be(sync, static_cast<uint32_t>(ntp >> 32));
+        write_u32_be(sync, static_cast<uint32_t>(ntp & 0xFFFFFFFFu));
+        write_u32_be(sync, rtp_timestamp);
+        udp_ports_.control.send_to(remote_host_, remote_control_port_, sync);
+        ap2_last_sync_at_ = std::chrono::steady_clock::now();
     }
 
     std::string local_address_text() const {
@@ -1621,9 +1640,13 @@ private:
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
     uint16_t remote_data_port_ = 0;
+    uint16_t remote_control_port_ = 0;
     uint32_t ap2_session_id_ = 0;
     uint64_t ap2_audio_nonce_ = 0;
+    uint64_t ap2_sync_start_rtp_ = 0;
     bool ap2_first_audio_ = true;
+    bool ap2_sync_started_ = false;
+    std::chrono::steady_clock::time_point ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
     std::string remote_host_;
     std::string stream_uri_;
     std::string dacp_id_;

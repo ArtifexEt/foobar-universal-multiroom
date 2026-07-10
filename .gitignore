@@ -1,6 +1,8 @@
 build/
+build-*/
 dist/
 external/
+._*
 *.user
 *.suo
 *.log
@@ -12,4 +14,3 @@ external/
 *.tlog
 bin/
 obj/
-
