@@ -878,19 +878,30 @@ public:
         remote_host_ = host;
         AddrInfoList addresses(host, port, SOCK_STREAM);
 
-        for (addrinfo* address = addresses.begin(); address != nullptr; address = address->ai_next) {
-            socket_handle_t candidate = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-            if (candidate == kInvalidSocket) {
-                continue;
-            }
+        const auto try_connect_family = [&](int family) {
+            for (addrinfo* address = addresses.begin(); address != nullptr; address = address->ai_next) {
+                if (family != AF_UNSPEC && address->ai_family != family) {
+                    continue;
+                }
 
-            if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
-                handle_ = candidate;
-                configure_timeouts();
-                return;
-            }
+                socket_handle_t candidate = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+                if (candidate == kInvalidSocket) {
+                    continue;
+                }
 
-            close_socket(candidate);
+                if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
+                    handle_ = candidate;
+                    configure_timeouts();
+                    return true;
+                }
+
+                close_socket(candidate);
+            }
+            return false;
+        };
+
+        if (try_connect_family(AF_INET) || try_connect_family(AF_UNSPEC)) {
+            return;
         }
 
         throw std::runtime_error("Could not connect to AirPlay endpoint: " + host + ":" + std::to_string(port));
