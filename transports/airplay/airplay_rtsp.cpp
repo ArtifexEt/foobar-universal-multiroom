@@ -981,10 +981,11 @@ public:
 
             const auto rtp_timestamp =
                 static_cast<uint32_t>((packet.presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
+            const auto rtp_sequence = next_rtp_sequence_++;
             auto header = make_rtp_header(
                 kRtpPayloadTypeAirPlay2Realtime,
                 ap2_first_audio_,
-                next_rtp_sequence_++,
+                rtp_sequence,
                 rtp_timestamp,
                 ap2_session_id_ == 0 ? kDefaultSsrc : ap2_session_id_);
             ap2_first_audio_ = false;
@@ -995,12 +996,17 @@ public:
             const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, payload);
             header.insert(header.end(), encrypted.begin(), encrypted.end());
             udp_ports_.data.send_to(remote_host_, remote_data_port_, header);
+            rtp_clock_initialized_ = true;
+            next_rtp_timestamp_ = rtp_timestamp + static_cast<uint32_t>(kAirPlay2FramesPerPacket);
             return;
         }
 
         const auto timestamp = static_cast<uint32_t>(packet.presentation_timestamp & 0xFFFFFFFFu);
+        const auto frame_count = static_cast<uint32_t>(bytes / (kAirPlay2Channels * sizeof(int16_t)));
         const auto rtp = make_rtp_l16_packet(next_rtp_sequence_++, timestamp, kDefaultSsrc, frames, bytes);
         udp_ports_.data.send_to(remote_host_, remote_data_port_, rtp);
+        rtp_clock_initialized_ = true;
+        next_rtp_timestamp_ = timestamp + frame_count;
     }
 
     void set_volume(const std::string& rtsp_session_id, int volume) {
@@ -1023,12 +1029,18 @@ public:
             throw std::logic_error("Cannot flush AirPlay stream before stream URI is known.");
         }
 
-        static_cast<void>(request(
-            "FLUSH",
-            stream_uri_,
-            {
+        auto headers = !ap2_audio_key_.empty()
+            ? ap2_headers({
+                {"Range", "npt=0-"},
+                {"RTP-Info", make_rtp_info_header()},
+                {"Session", "0"},
+            })
+            : std::map<std::string, std::string>{
+                {"RTP-Info", make_rtp_info_header()},
                 {"Session", rtsp_session_id},
-            }));
+            };
+
+        static_cast<void>(request("FLUSH", stream_uri_, std::move(headers)));
     }
 
     AirPlayNegotiatedSession open_airplay2_transient(
@@ -1194,6 +1206,11 @@ private:
         return ap2_headers({
             {"Content-Type", "application/x-apple-binary-plist"},
         });
+    }
+
+    std::string make_rtp_info_header() const {
+        const auto timestamp = rtp_clock_initialized_ ? next_rtp_timestamp_ : uint32_t{};
+        return "seq=" + std::to_string(next_rtp_sequence_) + ";rtptime=" + std::to_string(timestamp);
     }
 
     AirPlayRtspResponse http_post_success(
@@ -1810,6 +1827,8 @@ private:
     socket_handle_t handle_ = kInvalidSocket;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
+    uint32_t next_rtp_timestamp_ = 0;
+    bool rtp_clock_initialized_ = false;
     uint16_t remote_data_port_ = 0;
     uint16_t remote_control_port_ = 0;
     uint32_t ap2_session_id_ = 0;
