@@ -914,6 +914,7 @@ public:
         }
 
         dacp_id_ = random_hex(8);
+        sender_device_id_ = random_hex(6);
         active_remote_ = std::to_string(random_u32());
         ap2_session_id_ = random_u32();
         if (ap2_session_id_ == 0) {
@@ -961,14 +962,19 @@ public:
         stream_uri_ = "rtsp://" + local_address_text() + "/" + std::to_string(ap2_session_id_);
         set_stream_uri(stream_uri_);
 
-        const auto session_body = make_ap2_session_setup_body();
-        const auto session_setup = request_success(
-            "SETUP",
-            stream_uri_,
-            ap2_headers({
-                {"Content-Type", "application/x-apple-binary-plist"},
-            }),
-            string_from_bytes(session_body));
+        AirPlayRtspResponse session_setup;
+        try {
+            const auto session_body = make_ap2_session_setup_body();
+            session_setup = request_success(
+                "SETUP",
+                stream_uri_,
+                ap2_headers({
+                    {"Content-Type", "application/x-apple-binary-plist"},
+                }),
+                string_from_bytes(session_body));
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("AirPlay 2 session SETUP failed: ") + e.what());
+        }
 
         const auto event_port = parse_ap2_event_port(session_setup.body);
         if (event_port != 0) {
@@ -983,14 +989,19 @@ public:
             // Some receivers still accept the stream SETUP after RECORD errors while they settle the event channel.
         }
 
-        const auto stream_body = make_ap2_stream_setup_body();
-        const auto stream_setup = request_success(
-            "SETUP",
-            stream_uri_,
-            ap2_headers({
-                {"Content-Type", "application/x-apple-binary-plist"},
-            }),
-            string_from_bytes(stream_body));
+        AirPlayRtspResponse stream_setup;
+        try {
+            const auto stream_body = make_ap2_stream_setup_body();
+            stream_setup = request_success(
+                "SETUP",
+                stream_uri_,
+                ap2_headers({
+                    {"Content-Type", "application/x-apple-binary-plist"},
+                }),
+                string_from_bytes(stream_body));
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("AirPlay 2 stream SETUP failed: ") + e.what());
+        }
 
         const auto stream_ports = parse_ap2_stream_ports(stream_setup.body);
         if (stream_ports.first == 0) {
@@ -1245,13 +1256,24 @@ private:
     AirPlay2Bytes make_ap2_session_setup_body() const {
         using namespace fxchain::airplay::bplist;
 
-        const auto device_id = colon_hex_text(dacp_id_);
+        const auto device_id = colon_hex_text(sender_device_id_);
         Dict dict;
         dict.emplace_back("deviceID", Value::str(device_id));
         dict.emplace_back("sessionUUID", Value::str(random_uuid_text()));
         // Keep session timing aligned with the NTP timing worker and 0xD4 sync packets below.
         dict.emplace_back("timingPort", Value::integer(local_udp_ports().timing.port()));
         dict.emplace_back("timingProtocol", Value::str("NTP"));
+        dict.emplace_back("isMultiSelectAirPlay", Value::boolean(true));
+        dict.emplace_back("groupContainsGroupLeader", Value::boolean(false));
+        dict.emplace_back("macAddress", Value::str(device_id));
+        dict.emplace_back("model", Value::str("iPhone14,3"));
+        dict.emplace_back("name", Value::str("FoobarUniversalMultiroom"));
+        dict.emplace_back("osBuildVersion", Value::str("20F66"));
+        dict.emplace_back("osName", Value::str("iPhone OS"));
+        dict.emplace_back("osVersion", Value::str("16.5"));
+        dict.emplace_back("senderSupportsRelay", Value::boolean(false));
+        dict.emplace_back("sourceVersion", Value::str("690.7.1"));
+        dict.emplace_back("statsCollectionEnabled", Value::boolean(false));
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
     }
 
@@ -1651,6 +1673,7 @@ private:
     std::string remote_host_;
     std::string stream_uri_;
     std::string dacp_id_;
+    std::string sender_device_id_;
     std::string active_remote_;
     AirPlay2Bytes ap2_audio_key_;
     std::unique_ptr<AirPlay2FrameCipher> control_cipher_;
