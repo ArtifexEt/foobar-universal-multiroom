@@ -53,6 +53,11 @@ constexpr uint32_t kAirPlay2LatencyFrames = 88200;
 constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
 
+enum class AirPlay2AudioEncoding {
+    Alac,
+    Pcm,
+};
+
 #ifdef _WIN32
 using socket_handle_t = SOCKET;
 constexpr socket_handle_t kInvalidSocket = INVALID_SOCKET;
@@ -268,6 +273,17 @@ std::vector<uint8_t> make_alac_uncompressed_frame(const void* frames, size_t byt
     if (filled > 0) {
         current = static_cast<uint8_t>(current << (8 - filled));
         out.push_back(current);
+    }
+    return out;
+}
+
+std::vector<uint8_t> make_airplay2_pcm_payload(const void* frames, size_t bytes) {
+    std::vector<uint8_t> out(kAirPlay2FramesPerPacket * kAirPlay2Channels * sizeof(int16_t), 0);
+    const auto samples_to_copy = std::min(kAirPlay2FramesPerPacket * kAirPlay2Channels, bytes / sizeof(int16_t));
+    const auto* input = static_cast<const uint8_t*>(frames);
+    for (size_t index = 0; index < samples_to_copy; ++index) {
+        out[index * 2] = input[index * 2 + 1];
+        out[index * 2 + 1] = input[index * 2];
     }
     return out;
 }
@@ -554,6 +570,23 @@ struct LocalUdpPorts {
         ports.local_timing_port = timing.port();
         return ports;
     }
+};
+
+class AirPlay2StreamSetupRejected final : public std::runtime_error {
+public:
+    AirPlay2StreamSetupRejected(int status_code, const std::string& reason)
+        : std::runtime_error(
+              "AirPlay RTSP SETUP failed with status " +
+              std::to_string(status_code) +
+              (reason.empty() ? std::string{} : " " + reason))
+        , status_code_(status_code) {}
+
+    int status_code() const {
+        return status_code_;
+    }
+
+private:
+    int status_code_ = 0;
 };
 
 LocalUdpPorts bind_local_udp_ports() {
@@ -865,8 +898,10 @@ public:
                 ap2_session_id_ == 0 ? kDefaultSsrc : ap2_session_id_);
             ap2_first_audio_ = false;
 
-            const auto alac = make_alac_uncompressed_frame(frames, bytes);
-            const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, alac);
+            const auto payload = ap2_audio_encoding_ == AirPlay2AudioEncoding::Pcm
+                ? make_airplay2_pcm_payload(frames, bytes)
+                : make_alac_uncompressed_frame(frames, bytes);
+            const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, payload);
             header.insert(header.end(), encrypted.begin(), encrypted.end());
             udp_ports_.data.send_to(remote_host_, remote_data_port_, header);
             return;
@@ -909,10 +944,27 @@ public:
         const OutputDevice& output,
         const PcmFormat& format,
         const std::optional<AirPlayPairingCredentials>& credentials) {
+        try {
+            return open_airplay2_transient_with_encoding(output, format, credentials, AirPlay2AudioEncoding::Alac);
+        } catch (const AirPlay2StreamSetupRejected& e) {
+            if (e.status_code() != 400) {
+                throw;
+            }
+            close();
+            return open_airplay2_transient_with_encoding(output, format, credentials, AirPlay2AudioEncoding::Pcm);
+        }
+    }
+
+    AirPlayNegotiatedSession open_airplay2_transient_with_encoding(
+        const OutputDevice& output,
+        const PcmFormat& format,
+        const std::optional<AirPlayPairingCredentials>& credentials,
+        AirPlay2AudioEncoding audio_encoding) {
         if (format.sample_rate != 44100 || format.channels != 2 || format.bits_per_sample != 16) {
             throw std::invalid_argument("AirPlay 2 MVP currently requires 44.1 kHz stereo 16-bit PCM.");
         }
 
+        ap2_audio_encoding_ = audio_encoding;
         dacp_id_ = random_hex(8);
         sender_device_id_ = random_hex(6);
         active_remote_ = std::to_string(random_u32());
@@ -989,14 +1041,17 @@ public:
 
         AirPlayRtspResponse stream_setup;
         try {
-            const auto stream_body = make_ap2_stream_setup_body();
-            stream_setup = request_success(
+            const auto stream_body = make_ap2_stream_setup_body(audio_encoding);
+            stream_setup = request(
                 "SETUP",
                 stream_uri_,
                 ap2_setup_headers(),
                 string_from_bytes(stream_body));
         } catch (const std::exception& e) {
             throw std::runtime_error(std::string("AirPlay 2 stream SETUP failed: ") + e.what());
+        }
+        if (!stream_setup.successful()) {
+            throw AirPlay2StreamSetupRejected(stream_setup.status_code, stream_setup.reason);
         }
 
         const auto stream_ports = parse_ap2_stream_ports(stream_setup.body);
@@ -1281,14 +1336,16 @@ private:
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
     }
 
-    AirPlay2Bytes make_ap2_stream_setup_body() const {
+    AirPlay2Bytes make_ap2_stream_setup_body(AirPlay2AudioEncoding audio_encoding) const {
         using namespace fxchain::airplay::bplist;
 
         Dict stream;
-        stream.emplace_back("audioFormat", Value::integer(0x40000));
+        stream.emplace_back(
+            "audioFormat",
+            Value::integer(audio_encoding == AirPlay2AudioEncoding::Pcm ? 0x800 : 0x40000));
         stream.emplace_back("audioMode", Value::str("default"));
         stream.emplace_back("controlPort", Value::integer(local_udp_ports().control.port()));
-        stream.emplace_back("ct", Value::integer(2));
+        stream.emplace_back("ct", Value::integer(audio_encoding == AirPlay2AudioEncoding::Pcm ? 1 : 2));
         stream.emplace_back("isMedia", Value::boolean(true));
         stream.emplace_back("latencyMax", Value::integer(kAirPlay2LatencyFrames));
         stream.emplace_back("latencyMin", Value::integer(kAirPlay2MinimumLatencyFrames));
@@ -1671,6 +1728,7 @@ private:
     uint32_t ap2_session_id_ = 0;
     uint64_t ap2_audio_nonce_ = 0;
     uint64_t ap2_sync_start_rtp_ = 0;
+    AirPlay2AudioEncoding ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
     bool ap2_first_audio_ = true;
     bool ap2_sync_started_ = false;
     std::chrono::steady_clock::time_point ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
