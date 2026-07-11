@@ -88,6 +88,24 @@ AirPlay2AudioEncoding preferred_airplay2_audio_encoding(const OutputDevice&) {
     return AirPlay2AudioEncoding::Pcm;
 }
 
+bool supports_airplay2_ptp(const OutputDevice& output) {
+    auto features = output.txt_records.find("features");
+    if (features == output.txt_records.end()) {
+        features = output.txt_records.find("ft");
+    }
+    if (features == output.txt_records.end()) {
+        return false;
+    }
+
+    const auto separator = features->second.find(',');
+    if (separator == std::string::npos) {
+        return false;
+    }
+
+    const auto high = std::strtoull(features->second.c_str() + separator + 1, nullptr, 0);
+    return (high & (uint64_t{1} << (41 - 32))) != 0;
+}
+
 std::vector<std::string> split_methods(const std::string& methods) {
     std::vector<std::string> result;
     std::stringstream stream(methods);
@@ -1049,6 +1067,11 @@ public:
         if (ap2_session_id_ == 0) {
             ap2_session_id_ = kDefaultSsrc;
         }
+        ap2_uses_ptp_ = supports_airplay2_ptp(output);
+        ap2_session_uuid_ = random_uuid_text();
+        ap2_group_uuid_ = random_uuid_text();
+        ap2_timing_peer_uuid_ = random_uuid_text();
+        ap2_timing_clock_id_ = (uint64_t{0x46424D52} << 32) | ap2_session_id_;
 
         connect_to(output.endpoint_host, output.endpoint_port);
         bind_transport_ports();
@@ -1105,6 +1128,20 @@ public:
             connect_event_channel(output.endpoint_host, event_port);
         }
 
+        if (ap2_uses_ptp_) {
+            static_cast<void>(request_success(
+                "RECORD",
+                stream_uri_,
+                ap2_headers()));
+
+            const auto peers_body = make_ap2_setpeers_body();
+            static_cast<void>(request_success(
+                "SETPEERS",
+                stream_uri_,
+                ap2_headers({{"Content-Type", "/peer-list-changed"}}),
+                string_from_bytes(peers_body)));
+        }
+
         AirPlayRtspResponse stream_setup;
         try {
             const auto stream_body = make_ap2_stream_setup_body(audio_encoding);
@@ -1128,10 +1165,12 @@ public:
         remote_control_port_ = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
         ap2_sync_started_ = false;
 
-        static_cast<void>(request_success(
-            "RECORD",
-            stream_uri_,
-            ap2_headers()));
+        if (!ap2_uses_ptp_) {
+            static_cast<void>(request_success(
+                "RECORD",
+                stream_uri_,
+                ap2_headers()));
+        }
 
         auto ports = local_udp_ports().to_transport_ports();
         ports.server_data_port = stream_ports.first;
@@ -1143,6 +1182,9 @@ public:
         session.stream_uri = stream_uri_;
         session.server_name = "AirPlay2";
         session.supported_methods = {"GET", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
+        if (ap2_uses_ptp_) {
+            session.supported_methods.push_back("SETPEERS");
+        }
         session.ports = ports;
         return session;
     }
@@ -1176,6 +1218,11 @@ private:
         remote_data_port_ = 0;
         remote_control_port_ = 0;
         ap2_session_id_ = 0;
+        ap2_uses_ptp_ = false;
+        ap2_session_uuid_.clear();
+        ap2_group_uuid_.clear();
+        ap2_timing_peer_uuid_.clear();
+        ap2_timing_clock_id_ = 0;
         ap2_audio_nonce_ = 0;
         ap2_sync_start_rtp_ = 0;
         ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
@@ -1417,9 +1464,36 @@ private:
         using namespace fxchain::airplay::bplist;
 
         const auto device_id = colon_hex_text(sender_device_id_);
+        if (ap2_uses_ptp_) {
+            Array addresses;
+            addresses.push_back(Value::str(local_address_text()));
+
+            Dict timing_peer;
+            timing_peer.emplace_back("ID", Value::str(ap2_timing_peer_uuid_));
+            timing_peer.emplace_back("DeviceType", Value::integer(0));
+            timing_peer.emplace_back("ClockID", Value::integer(static_cast<int64_t>(ap2_timing_clock_id_)));
+            timing_peer.emplace_back("SupportsClockPortMatchingOverride", Value::boolean(false));
+            timing_peer.emplace_back("Addresses", Value::array(addresses));
+
+            Array timing_peer_list;
+            timing_peer_list.push_back(Value::object(timing_peer));
+
+            Dict dict;
+            dict.emplace_back("name", Value::str("FoobarUniversalMultiroom"));
+            dict.emplace_back("deviceID", Value::str(device_id));
+            dict.emplace_back("sessionUUID", Value::str(ap2_session_uuid_));
+            dict.emplace_back("timingProtocol", Value::str("PTP"));
+            dict.emplace_back("macAddress", Value::str(device_id));
+            dict.emplace_back("groupUUID", Value::str(ap2_group_uuid_));
+            dict.emplace_back("groupContainsGroupLeader", Value::boolean(false));
+            dict.emplace_back("timingPeerInfo", Value::object(std::move(timing_peer)));
+            dict.emplace_back("timingPeerList", Value::array(std::move(timing_peer_list)));
+            return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
+        }
+
         Dict dict;
         dict.emplace_back("deviceID", Value::str(device_id));
-        dict.emplace_back("sessionUUID", Value::str(random_uuid_text()));
+        dict.emplace_back("sessionUUID", Value::str(ap2_session_uuid_));
         // Keep session timing aligned with the NTP timing worker and 0xD4 sync packets below.
         dict.emplace_back("timingPort", Value::integer(local_udp_ports().timing.port()));
         dict.emplace_back("timingProtocol", Value::str("NTP"));
@@ -1435,6 +1509,15 @@ private:
         dict.emplace_back("sourceVersion", Value::str("690.7.1"));
         dict.emplace_back("statsCollectionEnabled", Value::boolean(false));
         return fxchain::airplay::bplist::encode(Value::object(std::move(dict)));
+    }
+
+    AirPlay2Bytes make_ap2_setpeers_body() const {
+        using namespace fxchain::airplay::bplist;
+
+        Array peers;
+        peers.push_back(Value::str(remote_host_));
+        peers.push_back(Value::str(local_address_text()));
+        return fxchain::airplay::bplist::encode(Value::array(std::move(peers)));
     }
 
     AirPlay2Bytes make_ap2_stream_setup_body(AirPlay2AudioEncoding audio_encoding) const {
@@ -1853,6 +1936,11 @@ private:
     uint16_t remote_data_port_ = 0;
     uint16_t remote_control_port_ = 0;
     uint32_t ap2_session_id_ = 0;
+    bool ap2_uses_ptp_ = false;
+    std::string ap2_session_uuid_;
+    std::string ap2_group_uuid_;
+    std::string ap2_timing_peer_uuid_;
+    uint64_t ap2_timing_clock_id_ = 0;
     uint64_t ap2_audio_nonce_ = 0;
     uint64_t ap2_sync_start_rtp_ = 0;
     AirPlay2AudioEncoding ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
