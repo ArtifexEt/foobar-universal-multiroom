@@ -38,6 +38,7 @@ private:
 
     void ensure_discovery_started();
     void refresh_outputs_worker();
+    void refresh_outputs_for_playback();
     void schedule_control_update();
     void control_update_worker();
     void pairing_worker(std::string id, std::string pin);
