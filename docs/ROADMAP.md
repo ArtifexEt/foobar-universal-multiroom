@@ -27,7 +27,7 @@ Acceptance:
 - Convert foobar audio chunks to transport format.
 - Complete transient HAP pair-setup for one AirPlay 2 speaker.
 - Establish encrypted AirPlay 2 session/stream setup.
-- Send encrypted realtime ALAC RTP packets.
+- Send encrypted realtime PCM RTP packets.
 - Start/stop the stream with foobar playback.
 - Handle pause/seek/flush cleanly.
 

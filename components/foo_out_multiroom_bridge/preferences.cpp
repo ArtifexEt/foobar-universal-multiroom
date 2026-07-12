@@ -298,6 +298,18 @@ private:
         HWND tabs = find_dlg_item(wnd_, idTabs);
         if (tabs == nullptr) return;
 
+        RECT client_rect = {};
+        ::GetClientRect(wnd_, &client_rect);
+        const auto tab_margin = dialog_units_to_pixels(wnd_, 5, 5);
+        ::SetWindowPos(
+            tabs,
+            nullptr,
+            tab_margin.cx,
+            tab_margin.cy,
+            max_int(0, static_cast<int>(client_rect.right) - (tab_margin.cx * 2)),
+            max_int(0, static_cast<int>(client_rect.bottom) - (tab_margin.cy * 2)),
+            SWP_NOZORDER | SWP_NOACTIVATE);
+
         RECT tab_rect = {};
         ::GetWindowRect(tabs, &tab_rect);
         ::MapWindowPoints(nullptr, wnd_, reinterpret_cast<POINT*>(&tab_rect), 2);

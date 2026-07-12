@@ -20,7 +20,10 @@ select, authenticate, synchronize, and stream to speakers by itself.
   reconnect behavior.
 - AirPlay 2 MVP starts with transient HAP pair-setup for receivers that accept
   it, encrypted control framing, binary-plist session/stream setup, and
-  encrypted realtime ALAC RTP.
+  encrypted realtime PCM RTP.
+- Timing mode follows the receiver feature flags. PTP-capable receivers get
+  timing-peer metadata plus `RECORD` and `SETPEERS` before stream `SETUP`;
+  older receivers keep the NTP timing-port setup.
 - Stored-credential pair-verify and on-screen PIN pairing are native auth
   layers, not a dependency on OwnTone or another runtime server.
 - The legacy RTSP/TCP `OPTIONS`, `ANNOUNCE`, `SETUP`, `RECORD`, `FLUSH`, and
@@ -31,8 +34,8 @@ select, authenticate, synchronize, and stream to speakers by itself.
 
 - Converts foobar PCM to the negotiated network format.
 - Starts with stereo 16-bit/44.1 kHz.
-- AirPlay 2 realtime uses encrypted ALAC RTP; unencrypted PCM/L16 is only a
-  legacy/probe path.
+- AirPlay 2 realtime uses encrypted, network-byte-order PCM RTP. Unencrypted
+  PCM/L16 is only a legacy/probe path.
 
 `clock`
 
@@ -49,9 +52,10 @@ select, authenticate, synchronize, and stream to speakers by itself.
 
 `rtp_sender`
 
-- Packetizes stereo 16-bit PCM as dynamic payload type 96 / L16 RTP.
+- Packetizes stereo 16-bit PCM as realtime payload type 96.
 - Uses the UDP ports negotiated by RTSP `SETUP`.
-- Converts little-endian host PCM samples to network byte order before sending.
+- Converts little-endian host PCM samples to network byte order and encrypts
+  each AirPlay 2 payload with the paired session key before sending.
 
 `device_state`
 
@@ -99,7 +103,7 @@ The UI should display two different ideas clearly:
 2. Show AirPlay 2 devices in foobar UI with unsupported/auth state.
 3. Complete transient HAP pair-setup for one AirPlay 2 speaker.
 4. Establish encrypted AirPlay 2 session/stream setup.
-5. Send encrypted realtime ALAC packets for stereo PCM.
+5. Send encrypted realtime PCM packets for stereo PCM.
 6. Add foobar output-device integration so playback enters the bridge from the
    normal foobar output pipeline.
 7. Add multiple selected speakers using the same sender timeline.
