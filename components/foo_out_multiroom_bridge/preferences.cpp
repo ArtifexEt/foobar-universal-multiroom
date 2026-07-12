@@ -547,20 +547,25 @@ private:
 
         for (int index = 0; index < static_cast<int>(outputs.size()); ++index) {
             const auto& output = outputs[static_cast<size_t>(index)];
-            auto name = widen_utf8(output.name.empty() ? output.id : output.name);
-            auto state = speaker_state_text(output);
-            auto endpoint = endpoint_text(output);
-            auto format = widen_utf8(output.format);
+            const std::array<std::wstring, 4> cells = {
+                widen_utf8(output.name.empty() ? output.id : output.name),
+                speaker_state_text(output),
+                endpoint_text(output),
+                widen_utf8(output.format),
+            };
 
-            LVITEMW item = {};
-            item.mask = LVIF_TEXT;
-            item.iItem = index;
-            item.iSubItem = 0;
-            item.pszText = name.data();
-            ListView_InsertItem(list, &item);
-            ListView_SetItemText(list, index, 1, state.data());
-            ListView_SetItemText(list, index, 2, endpoint.data());
-            ListView_SetItemText(list, index, 3, format.data());
+            for (int column = 0; column < static_cast<int>(cells.size()); ++column) {
+                LVITEMW item = {};
+                item.mask = LVIF_TEXT;
+                item.iItem = index;
+                item.iSubItem = column;
+                item.pszText = const_cast<wchar_t*>(cells[static_cast<size_t>(column)].c_str());
+                if (column == 0) {
+                    ::SendMessageW(list, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item));
+                } else {
+                    ::SendMessageW(list, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&item));
+                }
+            }
         }
     }
 
