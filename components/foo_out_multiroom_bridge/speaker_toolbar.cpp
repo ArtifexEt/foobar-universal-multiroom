@@ -60,7 +60,7 @@ void notify_toolbar_on_main_thread() {
     }
 }
 
-class MultiroomSpeakerToolbarDropdown final : public fb2k::toolbarDropDown {
+class MultiroomSpeakerToolbarDropdown : public fb2k::toolbarDropDown {
 public:
     GUID getGuid() override {
         return guid_airplay_speaker_toolbar_dropdown;
