@@ -283,6 +283,7 @@ private:
         add_speaker_column(list, 1, L"State", 74);
         add_speaker_column(list, 2, L"Endpoint", 110);
         add_speaker_column(list, 3, L"Format", 92);
+        size_speaker_columns(list);
     }
 
     void add_speaker_column(HWND list, int index, const wchar_t* label, int width) {
@@ -292,6 +293,25 @@ private:
         column.cx = width;
         column.iSubItem = index;
         ListView_InsertColumn(list, index, &column);
+    }
+
+    void size_speaker_columns(HWND list) {
+        RECT client = {};
+        ::GetClientRect(list, &client);
+        const int usable_width = max_int(
+            0,
+            static_cast<int>(client.right - client.left) - ::GetSystemMetrics(SM_CXVSCROLL) - 2);
+        if (usable_width == 0) return;
+
+        const int name_width = max_int(140, usable_width * 27 / 100);
+        const int state_width = max_int(90, usable_width * 16 / 100);
+        const int endpoint_width = max_int(170, usable_width * 36 / 100);
+        const int format_width = max_int(85, usable_width - name_width - state_width - endpoint_width);
+
+        ListView_SetColumnWidth(list, 0, name_width);
+        ListView_SetColumnWidth(list, 1, state_width);
+        ListView_SetColumnWidth(list, 2, endpoint_width);
+        ListView_SetColumnWidth(list, 3, format_width);
     }
 
     void position_pages() {
@@ -384,6 +404,7 @@ private:
                 width,
                 list_height,
                 SWP_NOZORDER | SWP_NOACTIVATE);
+            size_speaker_columns(list);
         }
         if (HWND pin_label = find_dlg_item(page, idPairPinLabel); pin_label != nullptr) {
             ::SetWindowPos(
