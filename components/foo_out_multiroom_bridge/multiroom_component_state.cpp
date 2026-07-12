@@ -147,6 +147,11 @@ void save_output_state(std::vector<StoredOutputState> states) {
 
 void update_stored_output_state(const multiroom::OutputDevice& output) {
     auto states = load_output_state();
+    states.erase(
+        std::remove_if(states.begin(), states.end(), [&](const auto& state) {
+            return std::find(output.aliases.begin(), output.aliases.end(), state.output_id) != output.aliases.end();
+        }),
+        states.end());
     const auto it = std::find_if(states.begin(), states.end(), [&](const auto& state) {
         return state.output_id == output.id;
     });
@@ -169,13 +174,17 @@ void apply_stored_output_state(std::vector<multiroom::OutputDevice>& outputs) {
     const auto states = load_output_state();
     for (auto& output : outputs) {
         const auto it = std::find_if(states.begin(), states.end(), [&](const auto& state) {
-            return state.output_id == output.id;
+            return state.output_id == output.id ||
+                   std::find(output.aliases.begin(), output.aliases.end(), state.output_id) != output.aliases.end();
         });
         if (it == states.end()) {
             continue;
         }
         output.selected = it->selected;
         output.volume = it->volume;
+        if (it->output_id != output.id) {
+            update_stored_output_state(output);
+        }
     }
 }
 
@@ -244,7 +253,8 @@ void preserve_user_output_state(
     const std::vector<multiroom::OutputDevice>& previous) {
     for (auto& output : refreshed) {
         const auto it = std::find_if(previous.begin(), previous.end(), [&](const auto& candidate) {
-            return candidate.id == output.id;
+            return candidate.id == output.id ||
+                   std::find(output.aliases.begin(), output.aliases.end(), candidate.id) != output.aliases.end();
         });
         if (it == previous.end()) {
             continue;

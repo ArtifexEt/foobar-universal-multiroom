@@ -482,6 +482,21 @@ bool prefer_device_identity(const OutputDevice& candidate, const OutputDevice& c
     return candidate.id.size() > current.id.size();
 }
 
+void append_alias(OutputDevice& device, const std::string& alias) {
+    if (alias.empty() || alias == device.id ||
+        std::find(device.aliases.begin(), device.aliases.end(), alias) != device.aliases.end()) {
+        return;
+    }
+    device.aliases.push_back(alias);
+}
+
+void append_aliases(OutputDevice& device, const OutputDevice& source) {
+    append_alias(device, source.id);
+    for (const auto& alias : source.aliases) {
+        append_alias(device, alias);
+    }
+}
+
 #ifdef _WIN32
 class WinsockSession {
 public:
@@ -578,6 +593,9 @@ void merge_device(OutputDevice& target, const OutputDevice& candidate) {
     }
     for (const auto& [key, value] : candidate.txt_records) {
         target.txt_records.try_emplace(key, value);
+    }
+    for (const auto& alias : candidate.aliases) {
+        append_alias(target, alias);
     }
 
     if (target.supports_airplay2) {
@@ -1053,13 +1071,20 @@ void AirPlayDiscovery::refresh(std::chrono::milliseconds timeout) {
         if (alias != devices_.end()) {
             if (!prefer_device_identity(device, alias->second)) {
                 alias->second.supports_legacy_l16 = alias->second.supports_legacy_l16 || device.supports_legacy_l16;
+                append_aliases(alias->second, device);
                 continue;
             }
             device.supports_legacy_l16 = device.supports_legacy_l16 || alias->second.supports_legacy_l16;
+            append_aliases(device, alias->second);
             devices_.erase(alias);
         }
 
         const auto existing = devices_.find(device.id);
+        if (existing != devices_.end()) {
+            for (const auto& existing_alias : existing->second.aliases) {
+                append_alias(device, existing_alias);
+            }
+        }
         if (existing != devices_.end() &&
             is_numeric_endpoint(existing->second) &&
             !is_numeric_endpoint(device)) {
@@ -1077,6 +1102,9 @@ void AirPlayDiscovery::upsert(OutputDevice device) {
     device.type = OutputType::AirPlay;
 
     std::lock_guard lock(mutex_);
+    for (const auto& alias : device.aliases) {
+        devices_.erase(alias);
+    }
     devices_[device.id] = std::move(device);
 }
 

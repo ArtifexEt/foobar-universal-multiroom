@@ -1098,6 +1098,7 @@ public:
             connect_event_channel(output.endpoint_host, event_port);
         }
 
+        bool retry_record_after_stream_setup = false;
         if (ap2_uses_ptp_) {
             const auto record_response = request(
                 "RECORD",
@@ -1111,6 +1112,7 @@ public:
                     "AirPlay 2 pre-stream RECORD failed with status " +
                     std::to_string(record_response.status_code) + " " + record_response.reason);
             }
+            retry_record_after_stream_setup = !record_response.successful();
 
             const auto peers_body = make_ap2_setpeers_body();
             static_cast<void>(request_success(
@@ -1143,7 +1145,7 @@ public:
         remote_control_port_ = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
         ap2_sync_started_ = false;
 
-        if (!ap2_uses_ptp_) {
+        if (!ap2_uses_ptp_ || retry_record_after_stream_setup) {
             static_cast<void>(request_success(
                 "RECORD",
                 stream_uri_,
@@ -1968,18 +1970,32 @@ AirPlayRtspControlClient::AirPlayRtspControlClient(std::shared_ptr<AirPlayPairin
 AirPlayRtspControlClient::~AirPlayRtspControlClient() = default;
 
 std::optional<AirPlayPairingCredentials> AirPlayRtspControlClient::load_pairing_credentials(
-    const std::string& output_id) {
+    const OutputDevice& output) {
+    std::vector<std::string> candidate_ids = {output.id};
+    candidate_ids.insert(candidate_ids.end(), output.aliases.begin(), output.aliases.end());
+
     if (pairing_store_) {
-        auto stored = pairing_store_->load(output_id);
-        if (stored && stored->valid()) {
-            memory_pairing_credentials_[output_id] = *stored;
-            return stored;
+        for (const auto& candidate_id : candidate_ids) {
+            auto stored = pairing_store_->load(candidate_id);
+            if (stored && stored->valid()) {
+                stored->output_id = output.id;
+                memory_pairing_credentials_[output.id] = *stored;
+                if (candidate_id != output.id) {
+                    pairing_store_->save(*stored);
+                }
+                return stored;
+            }
         }
     }
 
-    const auto it = memory_pairing_credentials_.find(output_id);
-    if (it != memory_pairing_credentials_.end() && it->second.valid()) {
-        return it->second;
+    for (const auto& candidate_id : candidate_ids) {
+        const auto it = memory_pairing_credentials_.find(candidate_id);
+        if (it != memory_pairing_credentials_.end() && it->second.valid()) {
+            auto stored = it->second;
+            stored.output_id = output.id;
+            memory_pairing_credentials_[output.id] = stored;
+            return stored;
+        }
     }
     return std::nullopt;
 }
@@ -2012,7 +2028,7 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     }
 
     auto connection = std::make_unique<Connection>();
-    auto credentials = load_pairing_credentials(output.id);
+    auto credentials = load_pairing_credentials(output);
     auto session = connection->open_airplay2_transient(output, format, credentials);
     connections_[output.id] = std::move(connection);
     return session;

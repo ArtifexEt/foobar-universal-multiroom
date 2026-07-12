@@ -264,14 +264,33 @@ bool exercise_failed_reselection_does_not_drop_pcm() {
 }
 
 bool exercise_output_registry_retain() {
+    bool ok = true;
     multiroom::OutputRegistry registry;
     registry.upsert(make_airplay_loopback_output("legacy-alias", "Speaker", 7500));
     registry.upsert(make_airplay_loopback_output("airplay2-identity", "Speaker", 7500));
 
     registry.retain({"airplay2-identity"});
     const auto outputs = registry.list();
-    return expect(outputs.size() == 1 && outputs.front().id == "airplay2-identity",
-                  "registry retain should remove superseded discovery aliases");
+    ok &= expect(outputs.size() == 1 && outputs.front().id == "airplay2-identity",
+                 "registry retain should remove superseded discovery aliases");
+
+    auto control_client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
+    multiroom::airplay::AirPlayTransport transport(control_client);
+    transport.start_discovery();
+    transport.add_discovered_output(make_airplay_loopback_output("legacy-alias", "Speaker", 7501));
+    transport.set_enabled_outputs({"legacy-alias"});
+    transport.set_output_volume("legacy-alias", 37);
+
+    auto canonical = make_airplay_loopback_output("airplay2-identity", "Speaker", 7501);
+    canonical.aliases.push_back("legacy-alias");
+    transport.add_discovered_output(std::move(canonical));
+    const auto migrated = transport.list_outputs();
+    ok &= expect(migrated.size() == 1 &&
+                 migrated.front().id == "airplay2-identity" &&
+                 migrated.front().selected &&
+                 migrated.front().volume == 37,
+                 "AirPlay identity promotion should preserve alias selection and volume");
+    return ok;
 }
 
 }  // namespace

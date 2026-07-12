@@ -156,7 +156,13 @@ void AirPlayTransport::sync_discovered_outputs() {
     discovered_ids.reserve(devices.size());
     for (auto device : devices) {
         discovered_ids.push_back(device.id);
-        const auto existing = registry_.find(device.id);
+        auto existing = registry_.find(device.id);
+        if (!existing) {
+            for (const auto& alias : device.aliases) {
+                existing = registry_.find(alias);
+                if (existing) break;
+            }
+        }
         if (existing) {
             device.selected = existing->selected;
             device.volume = existing->volume;
