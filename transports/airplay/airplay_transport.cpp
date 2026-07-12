@@ -35,7 +35,8 @@ std::vector<OutputDevice> AirPlayTransport::list_outputs() {
 
 AirPlayPairingResult AirPlayTransport::pair_output(const std::string& id, const std::string& pin) {
     sync_discovered_outputs();
-    const auto output = registry_.find(id);
+    const auto resolved_id = resolve_output_id(id);
+    const auto output = registry_.find(resolved_id);
     if (!output) {
         throw std::out_of_range("Unknown AirPlay output: " + id);
     }
@@ -47,18 +48,21 @@ AirPlayPairingResult AirPlayTransport::pair_output(const std::string& id, const 
 
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
     sync_discovered_outputs();
-    registry_.set_enabled_outputs(ids);
+    registry_.set_enabled_outputs(resolve_output_ids(ids));
     sessions_.prepare_outputs(registry_.list());
     sessions_.close_missing_outputs(registry_.list());
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
-    registry_.set_output_volume(id, volume);
-    sessions_.set_volume(id, volume);
+    sync_discovered_outputs();
+    const auto resolved_id = resolve_output_id(id);
+    registry_.set_output_volume(resolved_id, volume);
+    sessions_.set_volume(resolved_id, volume);
 }
 
 void AirPlayTransport::set_output_offset_ms(const std::string& id, int offset_ms) {
-    registry_.set_output_offset_ms(id, offset_ms);
+    sync_discovered_outputs();
+    registry_.set_output_offset_ms(resolve_output_id(id), offset_ms);
 }
 
 void AirPlayTransport::open_stream(const PcmFormat& format) {
@@ -131,7 +135,7 @@ void AirPlayTransport::add_discovered_output(OutputDevice device) {
 }
 
 void AirPlayTransport::set_measured_latency_ms(const std::string& id, int measured_latency_ms) {
-    registry_.set_measured_latency_ms(id, measured_latency_ms);
+    registry_.set_measured_latency_ms(resolve_output_id(id), measured_latency_ms);
 }
 
 bool AirPlayTransport::discovery_active() const {
@@ -173,6 +177,28 @@ void AirPlayTransport::sync_discovered_outputs() {
         registry_.upsert(std::move(device));
     }
     registry_.retain(discovered_ids);
+}
+
+std::string AirPlayTransport::resolve_output_id(const std::string& id) const {
+    for (const auto& output : registry_.list()) {
+        if (output.id == id ||
+            std::find(output.aliases.begin(), output.aliases.end(), id) != output.aliases.end()) {
+            return output.id;
+        }
+    }
+    return id;
+}
+
+std::vector<std::string> AirPlayTransport::resolve_output_ids(const std::vector<std::string>& ids) const {
+    std::vector<std::string> resolved;
+    resolved.reserve(ids.size());
+    for (const auto& id : ids) {
+        const auto canonical_id = resolve_output_id(id);
+        if (std::find(resolved.begin(), resolved.end(), canonical_id) == resolved.end()) {
+            resolved.push_back(canonical_id);
+        }
+    }
+    return resolved;
 }
 
 }  // namespace multiroom::airplay

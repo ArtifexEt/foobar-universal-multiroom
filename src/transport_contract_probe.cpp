@@ -289,6 +289,16 @@ bool exercise_output_registry_retain() {
                  migrated.front().selected &&
                  migrated.front().volume == 37,
                  "AirPlay identity promotion should preserve alias selection and volume");
+
+    transport.set_enabled_outputs({});
+    transport.set_enabled_outputs({"legacy-alias"});
+    transport.set_output_volume("legacy-alias", 41);
+    const auto stale_alias_update = transport.list_outputs();
+    ok &= expect(stale_alias_update.size() == 1 &&
+                 stale_alias_update.front().id == "airplay2-identity" &&
+                 stale_alias_update.front().selected &&
+                 stale_alias_update.front().volume == 41,
+                 "AirPlay controls should resolve a stale discovery alias after identity promotion");
     return ok;
 }
 
