@@ -446,11 +446,17 @@ void MultiroomComponentState::refresh_outputs_for_playback() {
     }
 
     std::vector<multiroom::OutputDevice> refreshed_outputs;
+    const bool saved_selection_expected = has_stored_selected_output();
     {
         std::lock_guard transport_lock(transport_mutex_);
-        transport_.refresh_discovery(std::chrono::milliseconds(2500));
-        refreshed_outputs = transport_.list_outputs();
-        apply_stored_output_state(refreshed_outputs);
+        for (size_t attempt = 0; attempt < 2; ++attempt) {
+            transport_.refresh_discovery(std::chrono::milliseconds(2500));
+            refreshed_outputs = transport_.list_outputs();
+            apply_stored_output_state(refreshed_outputs);
+            if (!saved_selection_expected || !selected_ids(refreshed_outputs).empty()) {
+                break;
+            }
+        }
     }
 
     size_t refresh_number = 0;

@@ -1099,7 +1099,7 @@ public:
         }
 
         if (ap2_uses_ptp_) {
-            static_cast<void>(request_success(
+            static_cast<void>(request(
                 "RECORD",
                 stream_uri_,
                 ap2_headers()));
