@@ -29,8 +29,8 @@ without changing the foobar UI.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
   volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
-- Foobar 2.x also exposes `AirPlay Speakers` as a native toolbar dropdown; its
-  entries toggle multiple speakers and its label follows the saved selection.
+- `AirPlay Speakers...` is available as a normal foobar command and can be
+  placed in the Buttons toolbar to open the compact multi-speaker selector.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
   speakers.

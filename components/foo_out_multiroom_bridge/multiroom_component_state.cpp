@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
-#include "speaker_toolbar.h"
 
 #include <algorithm>
 #include <cmath>
@@ -393,7 +392,6 @@ void MultiroomComponentState::refresh_outputs_worker() {
                 last_error_ = std::move(refresh_error);
             }
         }
-        notify_multiroom_speaker_toolbar_changed();
 
         if (refresh_ok) {
             FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery refresh #" << refresh_number
@@ -467,7 +465,6 @@ void MultiroomComponentState::refresh_outputs_for_playback() {
         cached_outputs_ = std::move(refreshed_outputs);
         last_error_.clear();
     }
-    notify_multiroom_speaker_toolbar_changed();
 
     FB2K_console_formatter() << "[Universal Multiroom] AirPlay playback discovery refresh #"
                               << refresh_number << " applied saved speaker state";
@@ -544,7 +541,6 @@ void MultiroomComponentState::control_update_worker() {
                 last_error_ = std::move(control_error);
             }
         }
-        notify_multiroom_speaker_toolbar_changed();
 
         if (control_ok) {
             FB2K_console_formatter() << "[Universal Multiroom] Speaker control update applied";
@@ -675,7 +671,6 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
         }
         if (changed) {
             update_stored_output_state(updated_output);
-            notify_multiroom_speaker_toolbar_changed();
         }
         schedule_control_update();
     } catch (const std::exception& e) {

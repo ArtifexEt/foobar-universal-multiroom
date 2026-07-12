@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
+#include "../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../transports/airplay/airplay_transport.h"
 
 struct TransportCapability {
@@ -262,6 +263,17 @@ bool exercise_failed_reselection_does_not_drop_pcm() {
     return ok;
 }
 
+bool exercise_output_registry_retain() {
+    multiroom::OutputRegistry registry;
+    registry.upsert(make_airplay_loopback_output("legacy-alias", "Speaker", 7500));
+    registry.upsert(make_airplay_loopback_output("airplay2-identity", "Speaker", 7500));
+
+    registry.retain({"airplay2-identity"});
+    const auto outputs = registry.list();
+    return expect(outputs.size() == 1 && outputs.front().id == "airplay2-identity",
+                  "registry retain should remove superseded discovery aliases");
+}
+
 }  // namespace
 
 int main() {
@@ -392,6 +404,7 @@ int main() {
         ok &= exercise_partial_airplay_open_failure();
         ok &= exercise_no_selected_outputs_sink();
         ok &= exercise_failed_reselection_does_not_drop_pcm();
+        ok &= exercise_output_registry_retain();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {

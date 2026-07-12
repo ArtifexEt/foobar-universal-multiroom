@@ -151,7 +151,11 @@ std::vector<AirPlaySessionState> AirPlayTransport::sessions() const {
 }
 
 void AirPlayTransport::sync_discovered_outputs() {
-    for (auto device : discovery_.list()) {
+    auto devices = discovery_.list();
+    std::vector<std::string> discovered_ids;
+    discovered_ids.reserve(devices.size());
+    for (auto device : devices) {
+        discovered_ids.push_back(device.id);
         const auto existing = registry_.find(device.id);
         if (existing) {
             device.selected = existing->selected;
@@ -162,6 +166,7 @@ void AirPlayTransport::sync_discovered_outputs() {
 
         registry_.upsert(std::move(device));
     }
+    registry_.retain(discovered_ids);
 }
 
 }  // namespace multiroom::airplay

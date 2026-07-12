@@ -458,6 +458,30 @@ bool is_numeric_endpoint(const OutputDevice& device) {
            inet_pton(AF_INET6, device.endpoint_host.c_str(), &ipv6) == 1;
 }
 
+bool same_physical_endpoint(const OutputDevice& left, const OutputDevice& right) {
+    return !left.name.empty() &&
+           !left.endpoint_host.empty() &&
+           left.endpoint_port != 0 &&
+           lower_ascii(left.name) == lower_ascii(right.name) &&
+           lower_ascii(left.endpoint_host) == lower_ascii(right.endpoint_host) &&
+           left.endpoint_port == right.endpoint_port;
+}
+
+bool has_public_key_identity(const OutputDevice& device) {
+    const auto key = device.txt_records.find("pk");
+    return key != device.txt_records.end() && !key->second.empty();
+}
+
+bool prefer_device_identity(const OutputDevice& candidate, const OutputDevice& current) {
+    if (candidate.supports_airplay2 != current.supports_airplay2) {
+        return candidate.supports_airplay2;
+    }
+    if (has_public_key_identity(candidate) != has_public_key_identity(current)) {
+        return has_public_key_identity(candidate);
+    }
+    return candidate.id.size() > current.id.size();
+}
+
 #ifdef _WIN32
 class WinsockSession {
 public:
@@ -1023,6 +1047,18 @@ void AirPlayDiscovery::refresh(std::chrono::milliseconds timeout) {
     auto devices = browse_mdns(timeout);
     std::lock_guard lock(mutex_);
     for (auto& device : devices) {
+        const auto alias = std::find_if(devices_.begin(), devices_.end(), [&](const auto& entry) {
+            return entry.first != device.id && same_physical_endpoint(entry.second, device);
+        });
+        if (alias != devices_.end()) {
+            if (!prefer_device_identity(device, alias->second)) {
+                alias->second.supports_legacy_l16 = alias->second.supports_legacy_l16 || device.supports_legacy_l16;
+                continue;
+            }
+            device.supports_legacy_l16 = device.supports_legacy_l16 || alias->second.supports_legacy_l16;
+            devices_.erase(alias);
+        }
+
         const auto existing = devices_.find(device.id);
         if (existing != devices_.end() &&
             is_numeric_endpoint(existing->second) &&

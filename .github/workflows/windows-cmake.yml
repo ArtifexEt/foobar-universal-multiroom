@@ -66,18 +66,6 @@ jobs:
           cmake --build external/airplay2-sender-cpp-build --config Release --target airplay_crypto
           7z x external/foobar2000-sdk.7z -oexternal/foobar2000-sdk -y
           7z x external/wtl.nupkg -oexternal/wtl -y
-          $sdkVersionHeader = "external/foobar2000-sdk/foobar2000/SDK/foobar2000-versions.h"
-          $sdkVersions = Get-Content $sdkVersionHeader -Raw
-          $sdkVersions = $sdkVersions.Replace(
-            "#define FOOBAR2000_TARGET_VERSION 80 // 1.5, 1.6",
-            "// #define FOOBAR2000_TARGET_VERSION 80 // 1.5, 1.6")
-          $sdkVersions = $sdkVersions.Replace(
-            "// #define FOOBAR2000_TARGET_VERSION 81 // 2.0",
-            "#define FOOBAR2000_TARGET_VERSION 81 // 2.0")
-          if ($sdkVersions -notmatch '(?m)^#define FOOBAR2000_TARGET_VERSION 81') {
-            throw "Could not configure the foobar2000 SDK for the 2.x toolbar API."
-          }
-          Set-Content -Path $sdkVersionHeader -Value $sdkVersions -Encoding ascii
           $wtlInclude = (Resolve-Path external/wtl/lib/native/include).Path
           $env:INCLUDE = "$wtlInclude;$env:INCLUDE"
           $env:CL = "/I`"$wtlInclude`" $env:CL"

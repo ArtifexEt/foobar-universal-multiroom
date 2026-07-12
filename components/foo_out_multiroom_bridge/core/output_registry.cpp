@@ -31,6 +31,18 @@ void OutputRegistry::upsert(OutputDevice device) {
     outputs_[device.id] = std::move(device);
 }
 
+void OutputRegistry::retain(const std::vector<std::string>& ids) {
+    const std::set<std::string> retained(ids.begin(), ids.end());
+    std::lock_guard lock(mutex_);
+    for (auto it = outputs_.begin(); it != outputs_.end();) {
+        if (retained.find(it->first) == retained.end()) {
+            it = outputs_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 std::vector<OutputDevice> OutputRegistry::list() const {
     std::lock_guard lock(mutex_);
 
