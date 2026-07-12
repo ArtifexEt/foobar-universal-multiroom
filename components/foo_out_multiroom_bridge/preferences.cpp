@@ -110,6 +110,14 @@ int max_int(int left, int right) {
     return left > right ? left : right;
 }
 
+SIZE dialog_units_to_pixels(HWND dialog, int horizontal, int vertical) {
+    RECT rect = {0, 0, horizontal, vertical};
+    if (::MapDialogRect(dialog, &rect) == FALSE) {
+        return {horizontal, vertical};
+    }
+    return {rect.right, rect.bottom};
+}
+
 std::string narrow_pin(const std::wstring& text) {
     std::string pin;
     for (wchar_t ch : text) {
@@ -290,6 +298,18 @@ private:
         HWND tabs = find_dlg_item(wnd_, idTabs);
         if (tabs == nullptr) return;
 
+        RECT client_rect = {};
+        ::GetClientRect(wnd_, &client_rect);
+        const auto tab_margin = dialog_units_to_pixels(wnd_, 5, 5);
+        ::SetWindowPos(
+            tabs,
+            nullptr,
+            tab_margin.cx,
+            tab_margin.cy,
+            max_int(0, static_cast<int>(client_rect.right) - (tab_margin.cx * 2)),
+            max_int(0, static_cast<int>(client_rect.bottom) - (tab_margin.cy * 2)),
+            SWP_NOZORDER | SWP_NOACTIVATE);
+
         RECT tab_rect = {};
         ::GetWindowRect(tabs, &tab_rect);
         ::MapWindowPoints(nullptr, wnd_, reinterpret_cast<POINT*>(&tab_rect), 2);
@@ -325,29 +345,75 @@ private:
 
         RECT rc = {};
         ::GetClientRect(page, &rc);
-        const int margin = 11;
         const int client_width = static_cast<int>(rc.right - rc.left);
         const int client_height = static_cast<int>(rc.bottom - rc.top);
-        const int width = max_int(0, client_width - (margin * 2));
-        const int pair_top = max_int(96, client_height - 30);
-        const int list_top = 83;
-        const int list_height = max_int(56, pair_top - list_top - 8);
+
+        const auto margin = dialog_units_to_pixels(page, 11, 11);
+        const auto summary_position = dialog_units_to_pixels(page, 109, 11);
+        const auto list_position = dialog_units_to_pixels(page, 11, 83);
+        const auto pair_label_position = dialog_units_to_pixels(page, 11, 2);
+        const auto pin_position = dialog_units_to_pixels(page, 39, 0);
+        const auto pair_position = dialog_units_to_pixels(page, 101, 0);
+        const auto pin_size = dialog_units_to_pixels(page, 52, 14);
+        const auto pair_size = dialog_units_to_pixels(page, 110, 14);
+        const auto label_size = dialog_units_to_pixels(page, 24, 13);
+        const auto pair_gap = dialog_units_to_pixels(page, 0, 9).cy;
+        const auto pair_bottom_margin = dialog_units_to_pixels(page, 0, 20).cy;
+
+        const int width = max_int(0, client_width - (margin.cx * 2));
+        const int pair_top = max_int(0, client_height - pair_bottom_margin - pair_size.cy);
+        const int list_height = max_int(0, pair_top - pair_gap - list_position.cy);
 
         if (HWND summary = find_dlg_item(page, idStatusSummary); summary != nullptr) {
-            const int summary_width = max_int(120, client_width - 120);
-            ::SetWindowPos(summary, nullptr, 109, 11, summary_width, 13, SWP_NOZORDER | SWP_NOACTIVATE);
+            const int summary_width = max_int(0, client_width - summary_position.cx - margin.cx);
+            ::SetWindowPos(
+                summary,
+                nullptr,
+                summary_position.cx,
+                summary_position.cy,
+                summary_width,
+                label_size.cy,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
         if (HWND list = find_dlg_item(page, idSpeakerList); list != nullptr) {
-            ::SetWindowPos(list, nullptr, margin, list_top, width, list_height, SWP_NOZORDER | SWP_NOACTIVATE);
+            ::SetWindowPos(
+                list,
+                nullptr,
+                list_position.cx,
+                list_position.cy,
+                width,
+                list_height,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
         if (HWND pin_label = find_dlg_item(page, idPairPinLabel); pin_label != nullptr) {
-            ::SetWindowPos(pin_label, nullptr, margin, pair_top + 2, 24, 13, SWP_NOZORDER | SWP_NOACTIVATE);
+            ::SetWindowPos(
+                pin_label,
+                nullptr,
+                pair_label_position.cx,
+                pair_top + pair_label_position.cy,
+                label_size.cx,
+                label_size.cy,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
         if (HWND pin = find_dlg_item(page, idPairPin); pin != nullptr) {
-            ::SetWindowPos(pin, nullptr, 39, pair_top, 52, 14, SWP_NOZORDER | SWP_NOACTIVATE);
+            ::SetWindowPos(
+                pin,
+                nullptr,
+                pin_position.cx,
+                pair_top,
+                pin_size.cx,
+                pin_size.cy,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
         if (HWND pair = find_dlg_item(page, idPairButton); pair != nullptr) {
-            ::SetWindowPos(pair, nullptr, 101, pair_top, 110, 14, SWP_NOZORDER | SWP_NOACTIVATE);
+            ::SetWindowPos(
+                pair,
+                nullptr,
+                pair_position.cx,
+                pair_top,
+                pair_size.cx,
+                pair_size.cy,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 

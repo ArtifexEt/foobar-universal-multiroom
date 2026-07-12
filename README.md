@@ -40,7 +40,10 @@ without changing the foobar UI.
   core as a pinned build dependency, without vendoring it into this repository.
 - The first real AirPlay 2 sender path performs transient HAP pair-setup,
   switches the RTSP control channel to ChaCha20-Poly1305 framing, negotiates
-  binary-plist session/stream `SETUP`, and sends encrypted realtime ALAC RTP.
+  binary-plist session/stream `SETUP`, and sends encrypted realtime PCM RTP.
+- Receivers advertising AirPlay PTP use native PTP session metadata and the
+  `SETUP`, `RECORD`, `SETPEERS`, stream `SETUP` sequence required by current
+  AirPlay 2 endpoints; older receivers retain the NTP session path.
 - PIN pairing persists AirPlay credentials through foobar configuration and
   reconnects with stored pair-verify credentials.
 - The legacy RTSP/TCP probe client has `OPTIONS`,
@@ -58,8 +61,8 @@ without changing the foobar UI.
 - macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
   for the portable core/AirPlay path that uses system Bonjour and sends a real
   generated tone through `MultiroomEngine`.
-- Still missing before daily use: full encrypted event-channel handling,
-  real-device validation, and timing hardening.
+- Still missing before daily use: full remote-command mapping from the
+  encrypted event channel and multi-speaker drift/timing hardening.
 
 ## TODO
 
