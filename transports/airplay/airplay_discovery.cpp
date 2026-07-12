@@ -458,13 +458,11 @@ bool is_numeric_endpoint(const OutputDevice& device) {
            inet_pton(AF_INET6, device.endpoint_host.c_str(), &ipv6) == 1;
 }
 
-bool same_physical_endpoint(const OutputDevice& left, const OutputDevice& right) {
+bool same_physical_receiver(const OutputDevice& left, const OutputDevice& right) {
     return !left.name.empty() &&
            !left.endpoint_host.empty() &&
-           left.endpoint_port != 0 &&
            lower_ascii(left.name) == lower_ascii(right.name) &&
-           lower_ascii(left.endpoint_host) == lower_ascii(right.endpoint_host) &&
-           left.endpoint_port == right.endpoint_port;
+           lower_ascii(left.endpoint_host) == lower_ascii(right.endpoint_host);
 }
 
 bool has_public_key_identity(const OutputDevice& device) {
@@ -495,6 +493,37 @@ void append_aliases(OutputDevice& device, const OutputDevice& source) {
     for (const auto& alias : source.aliases) {
         append_alias(device, alias);
     }
+}
+
+void upsert_discovered_identity(
+    std::map<std::string, OutputDevice>& devices,
+    OutputDevice device) {
+    const auto alias = std::find_if(devices.begin(), devices.end(), [&](const auto& entry) {
+        return entry.first != device.id && same_physical_receiver(entry.second, device);
+    });
+    if (alias != devices.end()) {
+        if (!prefer_device_identity(device, alias->second)) {
+            alias->second.supports_legacy_l16 = alias->second.supports_legacy_l16 || device.supports_legacy_l16;
+            append_aliases(alias->second, device);
+            return;
+        }
+        device.supports_legacy_l16 = device.supports_legacy_l16 || alias->second.supports_legacy_l16;
+        append_aliases(device, alias->second);
+        devices.erase(alias);
+    }
+
+    const auto existing = devices.find(device.id);
+    if (existing != devices.end()) {
+        for (const auto& existing_alias : existing->second.aliases) {
+            append_alias(device, existing_alias);
+        }
+    }
+    if (existing != devices.end() &&
+        is_numeric_endpoint(existing->second) &&
+        !is_numeric_endpoint(device)) {
+        device.endpoint_host = existing->second.endpoint_host;
+    }
+    devices[device.id] = std::move(device);
 }
 
 #ifdef _WIN32
@@ -1065,32 +1094,7 @@ void AirPlayDiscovery::refresh(std::chrono::milliseconds timeout) {
     auto devices = browse_mdns(timeout);
     std::lock_guard lock(mutex_);
     for (auto& device : devices) {
-        const auto alias = std::find_if(devices_.begin(), devices_.end(), [&](const auto& entry) {
-            return entry.first != device.id && same_physical_endpoint(entry.second, device);
-        });
-        if (alias != devices_.end()) {
-            if (!prefer_device_identity(device, alias->second)) {
-                alias->second.supports_legacy_l16 = alias->second.supports_legacy_l16 || device.supports_legacy_l16;
-                append_aliases(alias->second, device);
-                continue;
-            }
-            device.supports_legacy_l16 = device.supports_legacy_l16 || alias->second.supports_legacy_l16;
-            append_aliases(device, alias->second);
-            devices_.erase(alias);
-        }
-
-        const auto existing = devices_.find(device.id);
-        if (existing != devices_.end()) {
-            for (const auto& existing_alias : existing->second.aliases) {
-                append_alias(device, existing_alias);
-            }
-        }
-        if (existing != devices_.end() &&
-            is_numeric_endpoint(existing->second) &&
-            !is_numeric_endpoint(device)) {
-            device.endpoint_host = existing->second.endpoint_host;
-        }
-        devices_[device.id] = std::move(device);
+        upsert_discovered_identity(devices_, std::move(device));
     }
 }
 
@@ -1102,10 +1106,7 @@ void AirPlayDiscovery::upsert(OutputDevice device) {
     device.type = OutputType::AirPlay;
 
     std::lock_guard lock(mutex_);
-    for (const auto& alias : device.aliases) {
-        devices_.erase(alias);
-    }
-    devices_[device.id] = std::move(device);
+    upsert_discovered_identity(devices_, std::move(device));
 }
 
 std::vector<OutputDevice> AirPlayDiscovery::list() const {

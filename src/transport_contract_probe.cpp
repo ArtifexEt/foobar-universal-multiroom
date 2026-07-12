@@ -281,8 +281,7 @@ bool exercise_output_registry_retain() {
     transport.set_enabled_outputs({"legacy-alias"});
     transport.set_output_volume("legacy-alias", 37);
 
-    auto canonical = make_airplay_loopback_output("airplay2-identity", "Speaker", 7501);
-    canonical.aliases.push_back("legacy-alias");
+    auto canonical = make_airplay_loopback_output("airplay2-identity", "Speaker", 7601);
     transport.add_discovered_output(std::move(canonical));
     const auto migrated = transport.list_outputs();
     ok &= expect(migrated.size() == 1 &&
