@@ -150,7 +150,7 @@ private:
         {
             std::lock_guard lock(queue_mutex_);
             worker_error = worker_error_;
-            if (worker_error.empty() && started_ && !stopping_) {
+            if (worker_error.empty() && started_ && !stopping_ && !paused_) {
                 const size_t available = capacity_frames_ > pcm_queue_.size()
                     ? capacity_frames_ - pcm_queue_.size()
                     : 0;
@@ -173,7 +173,7 @@ private:
 
     t_size can_write_samples() override {
         std::lock_guard lock(queue_mutex_);
-        if (!started_ || stopping_ || !worker_error_.empty()) return 0;
+        if (!started_ || stopping_ || paused_ || !worker_error_.empty()) return 0;
         return capacity_frames_ > pcm_queue_.size() ? capacity_frames_ - pcm_queue_.size() : 0;
     }
 
@@ -333,7 +333,7 @@ private:
                     bool packet_is_current = false;
                     {
                         std::lock_guard state_lock(queue_mutex_);
-                        packet_is_current = !stopping_ && !paused_ && stream_epoch_ == epoch;
+                        packet_is_current = !stopping_ && stream_epoch_ == epoch;
                     }
                     if (packet_is_current) {
                         MultiroomComponentState::instance().write_playback_pcm(packet.data(), packet.size());
