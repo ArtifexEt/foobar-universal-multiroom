@@ -1099,10 +1099,18 @@ public:
         }
 
         if (ap2_uses_ptp_) {
-            static_cast<void>(request(
+            const auto record_response = request(
                 "RECORD",
                 stream_uri_,
-                ap2_headers()));
+                ap2_headers());
+            // Some PTP receivers require stream SETUP first and reject this early RECORD as bad state.
+            if (!record_response.successful() &&
+                record_response.status_code != 400 &&
+                record_response.status_code != 455) {
+                throw std::runtime_error(
+                    "AirPlay 2 pre-stream RECORD failed with status " +
+                    std::to_string(record_response.status_code) + " " + record_response.reason);
+            }
 
             const auto peers_body = make_ap2_setpeers_body();
             static_cast<void>(request_success(
