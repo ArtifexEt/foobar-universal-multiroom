@@ -283,6 +283,7 @@ private:
         add_speaker_column(list, 1, L"State", 74);
         add_speaker_column(list, 2, L"Endpoint", 110);
         add_speaker_column(list, 3, L"Format", 92);
+        size_speaker_columns(list);
     }
 
     void add_speaker_column(HWND list, int index, const wchar_t* label, int width) {
@@ -292,6 +293,25 @@ private:
         column.cx = width;
         column.iSubItem = index;
         ListView_InsertColumn(list, index, &column);
+    }
+
+    void size_speaker_columns(HWND list) {
+        RECT client = {};
+        ::GetClientRect(list, &client);
+        const int usable_width = max_int(
+            0,
+            static_cast<int>(client.right - client.left) - ::GetSystemMetrics(SM_CXVSCROLL) - 2);
+        if (usable_width == 0) return;
+
+        const int name_width = max_int(140, usable_width * 27 / 100);
+        const int state_width = max_int(90, usable_width * 16 / 100);
+        const int endpoint_width = max_int(170, usable_width * 36 / 100);
+        const int format_width = max_int(85, usable_width - name_width - state_width - endpoint_width);
+
+        ListView_SetColumnWidth(list, 0, name_width);
+        ListView_SetColumnWidth(list, 1, state_width);
+        ListView_SetColumnWidth(list, 2, endpoint_width);
+        ListView_SetColumnWidth(list, 3, format_width);
     }
 
     void position_pages() {
@@ -384,6 +404,7 @@ private:
                 width,
                 list_height,
                 SWP_NOZORDER | SWP_NOACTIVATE);
+            size_speaker_columns(list);
         }
         if (HWND pin_label = find_dlg_item(page, idPairPinLabel); pin_label != nullptr) {
             ::SetWindowPos(
@@ -547,20 +568,25 @@ private:
 
         for (int index = 0; index < static_cast<int>(outputs.size()); ++index) {
             const auto& output = outputs[static_cast<size_t>(index)];
-            auto name = widen_utf8(output.name.empty() ? output.id : output.name);
-            auto state = speaker_state_text(output);
-            auto endpoint = endpoint_text(output);
-            auto format = widen_utf8(output.format);
+            const std::array<std::wstring, 4> cells = {
+                widen_utf8(output.name.empty() ? output.id : output.name),
+                speaker_state_text(output),
+                endpoint_text(output),
+                widen_utf8(output.format),
+            };
 
-            LVITEMW item = {};
-            item.mask = LVIF_TEXT;
-            item.iItem = index;
-            item.iSubItem = 0;
-            item.pszText = name.data();
-            ListView_InsertItem(list, &item);
-            ListView_SetItemText(list, index, 1, state.data());
-            ListView_SetItemText(list, index, 2, endpoint.data());
-            ListView_SetItemText(list, index, 3, format.data());
+            for (int column = 0; column < static_cast<int>(cells.size()); ++column) {
+                LVITEMW item = {};
+                item.mask = LVIF_TEXT;
+                item.iItem = index;
+                item.iSubItem = column;
+                item.pszText = const_cast<wchar_t*>(cells[static_cast<size_t>(column)].c_str());
+                if (column == 0) {
+                    ::SendMessageW(list, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item));
+                } else {
+                    ::SendMessageW(list, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&item));
+                }
+            }
         }
     }
 
