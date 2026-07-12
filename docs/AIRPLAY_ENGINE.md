@@ -21,9 +21,9 @@ select, authenticate, synchronize, and stream to speakers by itself.
 - AirPlay 2 MVP starts with transient HAP pair-setup for receivers that accept
   it, encrypted control framing, binary-plist session/stream setup, and
   encrypted lossless realtime ALAC or PCM RTP.
-- Session setup uses the native AirPlay NTP timing port and sync packets.
-  Advertising PTP is reserved for a future sender clock that actually serves
-  PTP; timing-peer metadata alone is not a valid PTP implementation.
+- Timing setup follows receiver feature flags. PTP-capable endpoints receive
+  timing-peer metadata plus `RECORD` and `SETPEERS` before stream `SETUP`;
+  NTP endpoints use the native timing port and complete `RECORD` afterwards.
 - Stored-credential pair-verify and on-screen PIN pairing are native auth
   layers, not a dependency on OwnTone or another runtime server.
 - The legacy RTSP/TCP `OPTIONS`, `ANNOUNCE`, `SETUP`, `RECORD`, `FLUSH`, and

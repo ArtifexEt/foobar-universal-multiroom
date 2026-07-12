@@ -44,8 +44,9 @@ without changing the foobar UI.
   switches the RTSP control channel to ChaCha20-Poly1305 framing, negotiates
   binary-plist session/stream `SETUP`, and sends encrypted lossless realtime
   ALAC or PCM RTP according to receiver compatibility.
-- The product path uses the native AirPlay NTP timing port and sync packets.
-  PTP is not advertised until this sender has a real PTP clock implementation.
+- Timing setup follows the receiver feature flags: PTP-capable endpoints use
+  the AirPlay timing-peer/`SETPEERS` handshake, while NTP endpoints use the
+  native timing port and sync packets.
 - PIN pairing persists AirPlay credentials through foobar configuration and
   reconnects with stored pair-verify credentials.
 - The legacy RTSP/TCP probe client has `OPTIONS`,
