@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "multiroom_component_state.h"
 #include "speaker_selector_popup.h"
 
 namespace {

@@ -243,7 +243,8 @@ void apply_host_addresses(
 void parse_response(
     const std::vector<uint8_t>& packet,
     std::map<std::string, DiscoveredService>& services,
-    std::map<std::string, std::string>& host_addresses) {
+    std::map<std::string, std::string>& host_addresses,
+    const std::string& response_address = {}) {
     if (packet.size() < 12) return;
 
     const auto qdcount = read_u16(packet, 4);
@@ -292,6 +293,10 @@ void parse_response(
                 service.port = read_u16(packet, rdata_offset + 4);
                 size_t target_offset = rdata_offset + 6;
                 reader.read_name(target_offset, service.target_host);
+                // Some receivers omit A/AAAA records; their SRV response source is a usable provisional address.
+                if (service.target_address.empty()) {
+                    service.target_address = response_address;
+                }
             }
         } else if (type == kDnsTypeTxt) {
             auto& service = services[name];
@@ -444,6 +449,83 @@ OutputDevice to_output_device(const DiscoveredService& service) {
     return device;
 }
 
+bool is_numeric_endpoint(const OutputDevice& device) {
+    if (device.endpoint_host.empty()) return false;
+
+    in_addr ipv4 = {};
+    in6_addr ipv6 = {};
+    return inet_pton(AF_INET, device.endpoint_host.c_str(), &ipv4) == 1 ||
+           inet_pton(AF_INET6, device.endpoint_host.c_str(), &ipv6) == 1;
+}
+
+bool same_physical_receiver(const OutputDevice& left, const OutputDevice& right) {
+    return !left.name.empty() &&
+           !left.endpoint_host.empty() &&
+           lower_ascii(left.name) == lower_ascii(right.name) &&
+           lower_ascii(left.endpoint_host) == lower_ascii(right.endpoint_host);
+}
+
+bool has_public_key_identity(const OutputDevice& device) {
+    const auto key = device.txt_records.find("pk");
+    return key != device.txt_records.end() && !key->second.empty();
+}
+
+bool prefer_device_identity(const OutputDevice& candidate, const OutputDevice& current) {
+    if (candidate.supports_airplay2 != current.supports_airplay2) {
+        return candidate.supports_airplay2;
+    }
+    if (has_public_key_identity(candidate) != has_public_key_identity(current)) {
+        return has_public_key_identity(candidate);
+    }
+    return candidate.id.size() > current.id.size();
+}
+
+void append_alias(OutputDevice& device, const std::string& alias) {
+    if (alias.empty() || alias == device.id ||
+        std::find(device.aliases.begin(), device.aliases.end(), alias) != device.aliases.end()) {
+        return;
+    }
+    device.aliases.push_back(alias);
+}
+
+void append_aliases(OutputDevice& device, const OutputDevice& source) {
+    append_alias(device, source.id);
+    for (const auto& alias : source.aliases) {
+        append_alias(device, alias);
+    }
+}
+
+void upsert_discovered_identity(
+    std::map<std::string, OutputDevice>& devices,
+    OutputDevice device) {
+    const auto alias = std::find_if(devices.begin(), devices.end(), [&](const auto& entry) {
+        return entry.first != device.id && same_physical_receiver(entry.second, device);
+    });
+    if (alias != devices.end()) {
+        if (!prefer_device_identity(device, alias->second)) {
+            alias->second.supports_legacy_l16 = alias->second.supports_legacy_l16 || device.supports_legacy_l16;
+            append_aliases(alias->second, device);
+            return;
+        }
+        device.supports_legacy_l16 = device.supports_legacy_l16 || alias->second.supports_legacy_l16;
+        append_aliases(device, alias->second);
+        devices.erase(alias);
+    }
+
+    const auto existing = devices.find(device.id);
+    if (existing != devices.end()) {
+        for (const auto& existing_alias : existing->second.aliases) {
+            append_alias(device, existing_alias);
+        }
+    }
+    if (existing != devices.end() &&
+        is_numeric_endpoint(existing->second) &&
+        !is_numeric_endpoint(device)) {
+        device.endpoint_host = existing->second.endpoint_host;
+    }
+    devices[device.id] = std::move(device);
+}
+
 #ifdef _WIN32
 class WinsockSession {
 public:
@@ -509,17 +591,21 @@ bool has_endpoint(const OutputDevice& device) {
 }
 
 void merge_device(OutputDevice& target, const OutputDevice& candidate) {
-    const bool prefer_candidate_endpoint =
-        candidate.supports_airplay2 && has_endpoint(candidate);
+    const bool prefer_candidate_endpoint = has_endpoint(candidate) &&
+        (!has_endpoint(target) ||
+         (candidate.supports_airplay2 && !target.supports_airplay2) ||
+         (candidate.supports_airplay2 == target.supports_airplay2 &&
+          !(is_numeric_endpoint(target) && !is_numeric_endpoint(candidate))));
 
     if (target.name.empty()) {
         target.name = candidate.name;
     }
-    if ((prefer_candidate_endpoint || target.endpoint_host.empty()) && !candidate.endpoint_host.empty()) {
+    if (prefer_candidate_endpoint) {
         target.endpoint_host = candidate.endpoint_host;
-    }
-    if ((prefer_candidate_endpoint || target.endpoint_port == 0) && candidate.endpoint_port != 0) {
         target.endpoint_port = candidate.endpoint_port;
+    } else {
+        if (target.endpoint_host.empty()) target.endpoint_host = candidate.endpoint_host;
+        if (target.endpoint_port == 0) target.endpoint_port = candidate.endpoint_port;
     }
 
     target.has_password = target.has_password || candidate.has_password;
@@ -536,6 +622,9 @@ void merge_device(OutputDevice& target, const OutputDevice& candidate) {
     }
     for (const auto& [key, value] : candidate.txt_records) {
         target.txt_records.try_emplace(key, value);
+    }
+    for (const auto& alias : candidate.aliases) {
+        append_alias(target, alias);
     }
 
     if (target.supports_airplay2) {
@@ -827,7 +916,13 @@ void receive_mdns_responses_until(
         }
         if (received > 0) {
             try {
-                parse_response(std::vector<uint8_t>(buffer.begin(), buffer.begin() + received), services, host_addresses);
+                char source_text[INET_ADDRSTRLEN] = {};
+                const auto* formatted_source = inet_ntop(AF_INET, &from.sin_addr, source_text, sizeof(source_text));
+                parse_response(
+                    std::vector<uint8_t>(buffer.begin(), buffer.begin() + received),
+                    services,
+                    host_addresses,
+                    formatted_source == nullptr ? std::string{} : std::string{source_text});
             } catch (const std::exception&) {
             }
         }
@@ -999,7 +1094,7 @@ void AirPlayDiscovery::refresh(std::chrono::milliseconds timeout) {
     auto devices = browse_mdns(timeout);
     std::lock_guard lock(mutex_);
     for (auto& device : devices) {
-        devices_[device.id] = std::move(device);
+        upsert_discovered_identity(devices_, std::move(device));
     }
 }
 
@@ -1011,7 +1106,7 @@ void AirPlayDiscovery::upsert(OutputDevice device) {
     device.type = OutputType::AirPlay;
 
     std::lock_guard lock(mutex_);
-    devices_[device.id] = std::move(device);
+    upsert_discovered_identity(devices_, std::move(device));
 }
 
 std::vector<OutputDevice> AirPlayDiscovery::list() const {

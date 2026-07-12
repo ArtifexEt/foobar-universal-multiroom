@@ -37,6 +37,7 @@ struct OutputDevice {
     std::string endpoint_host;
     uint16_t endpoint_port = 0;
     std::map<std::string, std::string> txt_records;
+    std::vector<std::string> aliases;
 };
 
 struct PcmFormat {

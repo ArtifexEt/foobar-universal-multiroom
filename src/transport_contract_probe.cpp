@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
+#include "../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../transports/airplay/airplay_transport.h"
 
 struct TransportCapability {
@@ -262,6 +263,45 @@ bool exercise_failed_reselection_does_not_drop_pcm() {
     return ok;
 }
 
+bool exercise_output_registry_retain() {
+    bool ok = true;
+    multiroom::OutputRegistry registry;
+    registry.upsert(make_airplay_loopback_output("legacy-alias", "Speaker", 7500));
+    registry.upsert(make_airplay_loopback_output("airplay2-identity", "Speaker", 7500));
+
+    registry.retain({"airplay2-identity"});
+    const auto outputs = registry.list();
+    ok &= expect(outputs.size() == 1 && outputs.front().id == "airplay2-identity",
+                 "registry retain should remove superseded discovery aliases");
+
+    auto control_client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
+    multiroom::airplay::AirPlayTransport transport(control_client);
+    transport.start_discovery();
+    transport.add_discovered_output(make_airplay_loopback_output("legacy-alias", "Speaker", 7501));
+    transport.set_enabled_outputs({"legacy-alias"});
+    transport.set_output_volume("legacy-alias", 37);
+
+    auto canonical = make_airplay_loopback_output("airplay2-identity", "Speaker", 7601);
+    transport.add_discovered_output(std::move(canonical));
+    const auto migrated = transport.list_outputs();
+    ok &= expect(migrated.size() == 1 &&
+                 migrated.front().id == "airplay2-identity" &&
+                 migrated.front().selected &&
+                 migrated.front().volume == 37,
+                 "AirPlay identity promotion should preserve alias selection and volume");
+
+    transport.set_enabled_outputs({});
+    transport.set_enabled_outputs({"legacy-alias"});
+    transport.set_output_volume("legacy-alias", 41);
+    const auto stale_alias_update = transport.list_outputs();
+    ok &= expect(stale_alias_update.size() == 1 &&
+                 stale_alias_update.front().id == "airplay2-identity" &&
+                 stale_alias_update.front().selected &&
+                 stale_alias_update.front().volume == 41,
+                 "AirPlay controls should resolve a stale discovery alias after identity promotion");
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -392,6 +432,7 @@ int main() {
         ok &= exercise_partial_airplay_open_failure();
         ok &= exercise_no_selected_outputs_sink();
         ok &= exercise_failed_reselection_does_not_drop_pcm();
+        ok &= exercise_output_registry_retain();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {

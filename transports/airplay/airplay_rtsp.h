@@ -105,7 +105,7 @@ public:
 private:
     class Connection;
 
-    std::optional<AirPlayPairingCredentials> load_pairing_credentials(const std::string& output_id);
+    std::optional<AirPlayPairingCredentials> load_pairing_credentials(const OutputDevice& output);
     void save_pairing_credentials(const AirPlayPairingCredentials& credentials);
 
     std::shared_ptr<AirPlayPairingStore> pairing_store_;

@@ -25,8 +25,9 @@ static constexpr UINT_PTR kRefreshTimer = 34000;
 static constexpr int kPopupWidth = 372;
 static constexpr int kPopupPadding = 12;
 static constexpr int kHeaderHeight = 34;
-static constexpr int kRowHeight = 62;
+static constexpr int kRowHeight = 48;
 static constexpr int kFooterHeight = 42;
+static constexpr size_t kMaxVisibleRows = 7;
 static constexpr int kToolbarMinHeight = 22;
 static constexpr int kToolbarMaxHeight = 34;
 
@@ -92,7 +93,6 @@ bool output_playable(const multiroom::OutputDevice& output) {
 
 std::wstring output_status_label(const multiroom::OutputDevice& output) {
     if (output.endpoint_host.empty() || output.endpoint_port == 0) return L"No endpoint";
-    if (output.supports_airplay2 && output.requires_encrypted_stream) return L"AP2";
     if (output.supports_airplay2) return volume_label(output.volume);
     if (output.supports_legacy_l16) return L"Legacy";
     if (output.requires_auth) return L"Auth required";
@@ -146,7 +146,7 @@ public:
             owner_ == nullptr ? core_api::get_main_window() : owner_,
             popup_rect,
             nullptr,
-            WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST) != nullptr);
         SetTimer(kRefreshTimer, 250);
         ShowWindow(SW_SHOW);
@@ -159,6 +159,8 @@ public:
         MSG_WM_PAINT(on_paint)
         MESSAGE_HANDLER(WM_COMMAND, on_command)
         MESSAGE_HANDLER(WM_HSCROLL, on_scroll)
+        MESSAGE_HANDLER(WM_VSCROLL, on_vertical_scroll)
+        MESSAGE_HANDLER(WM_MOUSEWHEEL, on_mouse_wheel)
         MESSAGE_HANDLER(WM_TIMER, on_timer)
         MESSAGE_HANDLER(WM_ACTIVATE, on_activate)
         MESSAGE_HANDLER(WM_KEYDOWN, on_key_down)
@@ -202,7 +204,8 @@ private:
         dc.LineTo(rc.right - kPopupPadding, kHeaderHeight);
 
         int row_top = kHeaderHeight + 6;
-        for (size_t index = 0; index < outputs_.size(); ++index) {
+        const auto row_end = (std::min)(outputs_.size(), first_visible_row_ + visible_row_count());
+        for (size_t index = first_visible_row_; index < row_end; ++index) {
             CRect row(kPopupPadding, row_top, rc.right - kPopupPadding, row_top + kRowHeight - 8);
             CBrush row_brush;
             WIN32_OP_D(row_brush.CreateSolidBrush(row_color(outputs_[index].selected)) != nullptr);
@@ -301,6 +304,42 @@ private:
         return 0;
     }
 
+    LRESULT on_vertical_scroll(UINT, WPARAM wp, LPARAM, BOOL&) {
+        int next_row = static_cast<int>(first_visible_row_);
+        switch (LOWORD(wp)) {
+        case SB_LINEUP:
+            --next_row;
+            break;
+        case SB_LINEDOWN:
+            ++next_row;
+            break;
+        case SB_PAGEUP:
+            next_row -= static_cast<int>(visible_row_count());
+            break;
+        case SB_PAGEDOWN:
+            next_row += static_cast<int>(visible_row_count());
+            break;
+        case SB_THUMBPOSITION:
+        case SB_THUMBTRACK:
+            next_row = static_cast<int>(HIWORD(wp));
+            break;
+        default:
+            return 0;
+        }
+
+        set_first_visible_row(next_row);
+        return 0;
+    }
+
+    LRESULT on_mouse_wheel(UINT, WPARAM wp, LPARAM, BOOL&) {
+        const auto delta = static_cast<short>(HIWORD(wp));
+        if (delta != 0) {
+            set_first_visible_row(
+                static_cast<int>(first_visible_row_) + (delta > 0 ? -1 : 1));
+        }
+        return 0;
+    }
+
     LRESULT on_activate(UINT, WPARAM wp, LPARAM, BOOL&) {
         if (LOWORD(wp) == WA_INACTIVE) {
             DestroyWindow();
@@ -323,7 +362,11 @@ private:
             }
         }
         controls_.clear();
-        volume_labels_.clear();
+        volume_labels_.assign(outputs_.size(), nullptr);
+        first_visible_row_ = (std::min)(first_visible_row_, max_first_visible_row());
+        update_scrollbar();
+
+        const int width = client_width();
 
         if (outputs_.empty()) {
             add_control(::CreateWindowExW(
@@ -333,7 +376,7 @@ private:
                 WS_CHILD | WS_VISIBLE | SS_CENTER | SS_EDITCONTROL,
                 kPopupPadding,
                 kHeaderHeight + 12,
-                kPopupWidth - (kPopupPadding * 2),
+                width - (kPopupPadding * 2),
                 42,
                 m_hWnd,
                 reinterpret_cast<HMENU>(kEmptyStatusId),
@@ -341,7 +384,8 @@ private:
                 nullptr));
         } else {
             int row_top = kHeaderHeight + 10;
-            for (size_t index = 0; index < outputs_.size(); ++index) {
+            const auto row_end = (std::min)(outputs_.size(), first_visible_row_ + visible_row_count());
+            for (size_t index = first_visible_row_; index < row_end; ++index) {
                 create_speaker_row(index, row_top);
                 row_top += kRowHeight;
             }
@@ -394,7 +438,7 @@ private:
             L"BUTTON",
             L"Refresh",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            kPopupWidth - kPopupPadding - 88,
+            width - kPopupPadding - 88,
             popup_height() - 32,
             88,
             24,
@@ -454,6 +498,7 @@ private:
         const auto& output = outputs_[index];
         const auto name = widen_utf8(output.name.empty() ? output.id : output.name);
         const bool playable = output_playable(output);
+        const int width = client_width();
 
         HWND check = add_control(::CreateWindowExW(
             0,
@@ -462,7 +507,7 @@ private:
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | (playable ? 0 : WS_DISABLED),
             kPopupPadding + 12,
             row_top + 4,
-            kPopupWidth - 128,
+            width - 124,
             22,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerCheckBase + index),
@@ -475,9 +520,9 @@ private:
             nullptr,
             WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | (playable ? 0 : WS_DISABLED),
             kPopupPadding + 30,
-            row_top + 28,
-            kPopupWidth - 176,
-            24,
+            row_top + 24,
+            width - 154,
+            20,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerVolumeBase + index),
             core_api::get_my_instance(),
@@ -488,16 +533,16 @@ private:
             L"STATIC",
             L"",
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
-            kPopupWidth - kPopupPadding - 104,
-            row_top + 30,
-            92,
+            width - kPopupPadding - 80,
+            row_top + 26,
+            80,
             20,
             m_hWnd,
             reinterpret_cast<HMENU>(kVolumeLabelBase + index),
             core_api::get_my_instance(),
             nullptr));
 
-        volume_labels_.push_back(label);
+        volume_labels_[index] = label;
 
         ::SendMessageW(check, BM_SETCHECK, output.selected ? BST_CHECKED : BST_UNCHECKED, 0);
         ::SendMessageW(slider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
@@ -528,8 +573,46 @@ private:
         }
     }
 
+    size_t visible_row_count() const {
+        return outputs_.empty() ? 0 : (std::min)(outputs_.size(), kMaxVisibleRows);
+    }
+
+    size_t max_first_visible_row() const {
+        const auto visible = visible_row_count();
+        return outputs_.size() > visible ? outputs_.size() - visible : 0;
+    }
+
+    int client_width() const {
+        CRect rc;
+        WIN32_OP_D(GetClientRect(&rc));
+        return rc.Width();
+    }
+
+    void update_scrollbar() {
+        const auto max_first = max_first_visible_row();
+        SCROLLINFO info = {};
+        info.cbSize = sizeof(info);
+        info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        info.nMin = 0;
+        info.nMax = outputs_.empty() ? 0 : static_cast<int>(outputs_.size() - 1);
+        info.nPage = static_cast<UINT>(visible_row_count());
+        info.nPos = static_cast<int>(first_visible_row_);
+        SetScrollInfo(SB_VERT, &info, TRUE);
+        ShowScrollBar(SB_VERT, max_first != 0);
+    }
+
+    void set_first_visible_row(int row) {
+        const auto clamped = static_cast<size_t>(
+            std::clamp(row, 0, static_cast<int>(max_first_visible_row())));
+        if (clamped == first_visible_row_) return;
+
+        first_visible_row_ = clamped;
+        rebuild_controls();
+        Invalidate();
+    }
+
     int popup_height() const {
-        const int body = outputs_.empty() ? 62 : static_cast<int>(outputs_.size()) * kRowHeight + 8;
+        const int body = outputs_.empty() ? 62 : static_cast<int>(visible_row_count()) * kRowHeight + 8;
         return kHeaderHeight + body + kFooterHeight;
     }
 
@@ -594,6 +677,7 @@ private:
     std::string outputs_signature_;
     std::vector<HWND> controls_;
     std::vector<HWND> volume_labels_;
+    size_t first_visible_row_ = 0;
 };
 
 class SpeakerSelectorElement

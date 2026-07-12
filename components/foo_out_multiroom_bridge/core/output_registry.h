@@ -13,6 +13,7 @@ namespace multiroom {
 class OutputRegistry {
 public:
     void upsert(OutputDevice device);
+    void retain(const std::vector<std::string>& ids);
     std::vector<OutputDevice> list() const;
     std::optional<OutputDevice> find(const std::string& id) const;
 
@@ -30,4 +31,3 @@ private:
 };
 
 }  // namespace multiroom
-

@@ -40,6 +40,8 @@ public:
 
 private:
     void sync_discovered_outputs();
+    std::string resolve_output_id(const std::string& id) const;
+    std::vector<std::string> resolve_output_ids(const std::vector<std::string>& ids) const;
 
     AirPlayDiscovery discovery_;
     OutputRegistry registry_;
