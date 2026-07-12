@@ -75,7 +75,7 @@ public:
     }
 
     size_t getNumValues() override {
-        return playable_outputs().size() + 1;
+        return (std::max)(playable_outputs().size() + 1, size_t{2});
     }
 
     void getValue(size_t index, pfc::string_base& out) override {
@@ -87,7 +87,7 @@ public:
 
         const auto output_index = index - 1;
         if (output_index >= outputs.size()) {
-            out = "AirPlay: refresh speakers";
+            out = "Refresh AirPlay speakers...";
             return;
         }
 
@@ -101,7 +101,10 @@ public:
 
         const auto outputs = playable_outputs();
         const auto output_index = index - 1;
-        if (output_index >= outputs.size()) return;
+        if (output_index >= outputs.size()) {
+            MultiroomComponentState::instance().refresh_outputs();
+            return;
+        }
 
         MultiroomComponentState::instance().toggle_output(outputs[output_index].id);
     }
