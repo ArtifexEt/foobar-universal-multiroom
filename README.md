@@ -29,6 +29,8 @@ without changing the foobar UI.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
   volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
+- Foobar 2.x also exposes `AirPlay Speakers` as a native toolbar dropdown; its
+  entries toggle multiple speakers and its label follows the saved selection.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
   speakers.
@@ -40,10 +42,10 @@ without changing the foobar UI.
   core as a pinned build dependency, without vendoring it into this repository.
 - The first real AirPlay 2 sender path performs transient HAP pair-setup,
   switches the RTSP control channel to ChaCha20-Poly1305 framing, negotiates
-  binary-plist session/stream `SETUP`, and sends encrypted realtime PCM RTP.
-- Receivers advertising AirPlay PTP use native PTP session metadata and the
-  `SETUP`, `RECORD`, `SETPEERS`, stream `SETUP` sequence required by current
-  AirPlay 2 endpoints; older receivers retain the NTP session path.
+  binary-plist session/stream `SETUP`, and sends encrypted lossless realtime
+  ALAC or PCM RTP according to receiver compatibility.
+- The product path uses the native AirPlay NTP timing port and sync packets.
+  PTP is not advertised until this sender has a real PTP clock implementation.
 - PIN pairing persists AirPlay credentials through foobar configuration and
   reconnects with stored pair-verify credentials.
 - The legacy RTSP/TCP probe client has `OPTIONS`,

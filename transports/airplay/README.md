@@ -19,7 +19,7 @@ internal boundary so the foobar component does not know protocol details.
 ## MVP Scope
 
 Start with one AirPlay 2 speaker using transient HAP pair-setup, encrypted
-control framing, binary-plist `SETUP`, and encrypted realtime ALAC RTP. Legacy
+control framing, binary-plist `SETUP`, and encrypted lossless realtime ALAC or PCM RTP. Legacy
 unencrypted PCM/L16 is a diagnostic probe path only and does not satisfy the MVP.
 
 The project uses `akustikrausch/airplay2-sender-cpp` as a pinned build-time
