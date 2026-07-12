@@ -308,6 +308,9 @@ private:
                     append_le16(packet, pcm[0]);
                     append_le16(packet, pcm[1]);
                 }
+                if (force_play_ && pcm_queue_.empty()) {
+                    force_play_ = false;
+                }
                 while (packet.size() < kAirPlayPacketFrames * 2 * sizeof(int16_t)) {
                     append_le16(packet, 0);
                     append_le16(packet, 0);
