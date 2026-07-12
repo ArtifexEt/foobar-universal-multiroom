@@ -1466,7 +1466,7 @@ private:
         using namespace fxchain::airplay::bplist;
 
         Array peers;
-        peers.push_back(Value::str(remote_host_));
+        peers.push_back(Value::str(peer_address_text()));
         peers.push_back(Value::str(local_address_text()));
         return fxchain::airplay::bplist::encode(Value::array(std::move(peers)));
     }
@@ -1588,6 +1588,31 @@ private:
                 0,
                 NI_NUMERICHOST) != 0) {
             return "0.0.0.0";
+        }
+        return host;
+    }
+
+    std::string peer_address_text() const {
+        sockaddr_storage address = {};
+#ifdef _WIN32
+        int address_size = sizeof(address);
+#else
+        socklen_t address_size = sizeof(address);
+#endif
+        if (getpeername(handle_, reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
+            throw std::runtime_error("Could not determine the connected AirPlay peer address.");
+        }
+
+        char host[NI_MAXHOST] = {};
+        if (getnameinfo(
+                reinterpret_cast<const sockaddr*>(&address),
+                address_size,
+                host,
+                sizeof(host),
+                nullptr,
+                0,
+                NI_NUMERICHOST) != 0) {
+            throw std::runtime_error("Could not format the connected AirPlay peer address.");
         }
         return host;
     }
