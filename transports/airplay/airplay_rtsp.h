@@ -78,6 +78,13 @@ public:
         const std::string& output_id,
         const std::string& rtsp_session_id,
         int volume) = 0;
+    virtual void set_metadata(
+        const std::string& output_id,
+        const std::string& rtsp_session_id,
+        const PlaybackMetadata& metadata) = 0;
+    virtual void clear_metadata(
+        const std::string& output_id,
+        const std::string& rtsp_session_id) = 0;
     virtual void flush(const std::string& output_id, const std::string& rtsp_session_id) = 0;
     virtual void close(const std::string& output_id, const std::string& rtsp_session_id) = 0;
 };
@@ -99,6 +106,13 @@ public:
         const std::string& output_id,
         const std::string& rtsp_session_id,
         int volume) override;
+    void set_metadata(
+        const std::string& output_id,
+        const std::string& rtsp_session_id,
+        const PlaybackMetadata& metadata) override;
+    void clear_metadata(
+        const std::string& output_id,
+        const std::string& rtsp_session_id) override;
     void flush(const std::string& output_id, const std::string& rtsp_session_id) override;
     void close(const std::string& output_id, const std::string& rtsp_session_id) override;
 
@@ -127,12 +141,22 @@ public:
         const std::string& output_id,
         const std::string& rtsp_session_id,
         int volume) override;
+    void set_metadata(
+        const std::string& output_id,
+        const std::string& rtsp_session_id,
+        const PlaybackMetadata& metadata) override;
+    void clear_metadata(
+        const std::string& output_id,
+        const std::string& rtsp_session_id) override;
     void flush(const std::string& output_id, const std::string& rtsp_session_id) override;
     void close(const std::string& output_id, const std::string& rtsp_session_id) override;
 
     size_t open_count() const;
     size_t audio_packet_count() const;
     size_t volume_set_count() const;
+    size_t metadata_set_count() const;
+    size_t metadata_clear_count() const;
+    PlaybackMetadata last_metadata() const;
     size_t flush_count() const;
     size_t close_count() const;
 
@@ -140,11 +164,16 @@ private:
     size_t open_count_ = 0;
     size_t audio_packet_count_ = 0;
     size_t volume_set_count_ = 0;
+    size_t metadata_set_count_ = 0;
+    size_t metadata_clear_count_ = 0;
+    PlaybackMetadata last_metadata_;
     size_t flush_count_ = 0;
     size_t close_count_ = 0;
 };
 
 std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(std::shared_ptr<AirPlayPairingStore> pairing_store = {});
 std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client();
+
+std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata);
 
 }  // namespace multiroom::airplay

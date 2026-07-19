@@ -516,6 +516,22 @@ void MultiroomComponentState::schedule_volume_update(const std::vector<std::stri
     control_thread_ = std::thread(&MultiroomComponentState::control_update_worker, this);
 }
 
+void MultiroomComponentState::schedule_metadata_update() {
+    {
+        std::lock_guard lock(mutex_);
+        control_metadata_update_requested_ = true;
+        if (control_in_progress_) {
+            return;
+        }
+        control_in_progress_ = true;
+    }
+
+    if (control_thread_.joinable()) {
+        control_thread_.join();
+    }
+    control_thread_ = std::thread(&MultiroomComponentState::control_update_worker, this);
+}
+
 void MultiroomComponentState::control_update_worker() {
     for (;;) {
         // A trackbar can produce dozens of notifications per second. Give those
@@ -534,14 +550,21 @@ void MultiroomComponentState::control_update_worker() {
 
         std::vector<multiroom::OutputDevice> outputs_snapshot;
         std::set<std::string> volume_update_ids;
+        multiroom::PlaybackMetadata metadata_snapshot;
         multiroom::PcmFormat playback_format_snapshot{};
         int master_volume_snapshot = 100;
         bool should_connect = false;
         bool full_update = false;
+        bool metadata_active = false;
+        bool metadata_update_requested = false;
         {
             std::lock_guard lock(mutex_);
             outputs_snapshot = cached_outputs_;
             master_volume_snapshot = master_volume_percent_;
+            metadata_snapshot = playback_metadata_;
+            metadata_active = playback_metadata_active_;
+            metadata_update_requested = control_metadata_update_requested_;
+            control_metadata_update_requested_ = false;
             full_update = control_full_update_requested_;
             control_full_update_requested_ = false;
             volume_update_ids.swap(control_volume_update_ids_);
@@ -557,6 +580,13 @@ void MultiroomComponentState::control_update_worker() {
 
         try {
             std::lock_guard transport_lock(transport_mutex_);
+            if (full_update || metadata_update_requested) {
+                if (metadata_active) {
+                    transport_.set_playback_metadata(metadata_snapshot);
+                } else {
+                    transport_.clear_playback_metadata();
+                }
+            }
             if (full_update) {
                 const auto selected = selected_ids(outputs_snapshot);
                 transport_.set_enabled_outputs(selected);
@@ -613,7 +643,9 @@ void MultiroomComponentState::control_update_worker() {
         bool run_again = false;
         {
             std::lock_guard lock(mutex_);
-            run_again = control_full_update_requested_ || !control_volume_update_ids_.empty();
+            run_again = control_full_update_requested_ ||
+                !control_volume_update_ids_.empty() ||
+                control_metadata_update_requested_;
             if (!run_again) {
                 control_in_progress_ = false;
             }
@@ -787,6 +819,31 @@ void MultiroomComponentState::set_master_volume_percent(int volume) {
     }
 }
 
+void MultiroomComponentState::set_playback_metadata(const multiroom::PlaybackMetadata& metadata) {
+    {
+        std::lock_guard lock(mutex_);
+        playback_metadata_ = metadata;
+        playback_metadata_active_ = true;
+    }
+    schedule_metadata_update();
+}
+
+void MultiroomComponentState::update_playback_position(uint64_t position_ms) {
+    std::lock_guard lock(mutex_);
+    if (playback_metadata_active_) {
+        playback_metadata_.position_ms = position_ms;
+    }
+}
+
+void MultiroomComponentState::clear_playback_metadata() {
+    {
+        std::lock_guard lock(mutex_);
+        playback_metadata_ = {};
+        playback_metadata_active_ = false;
+    }
+    schedule_metadata_update();
+}
+
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
     try {
         validate_playback_format(format);
@@ -794,13 +851,17 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
         refresh_outputs_for_playback();
 
         std::vector<multiroom::OutputDevice> outputs_snapshot;
+        multiroom::PlaybackMetadata metadata_snapshot;
         int master_volume_snapshot = 100;
+        bool metadata_active = false;
         const bool saved_selection_expected = has_stored_selected_output();
         {
             std::lock_guard lock(mutex_);
             playback_format_ = format;
             playback_format_valid_ = true;
             outputs_snapshot = cached_outputs_;
+            metadata_snapshot = playback_metadata_;
+            metadata_active = playback_metadata_active_;
             master_volume_snapshot = master_volume_percent_;
             last_error_.clear();
         }
@@ -819,6 +880,11 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
                 transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
             }
             playback_engine_->open_stream(format);
+            if (metadata_active) {
+                transport_.set_playback_metadata(metadata_snapshot);
+            } else {
+                transport_.clear_playback_metadata();
+            }
             transport_.connect_selected_outputs();
             for (const auto& output : outputs_snapshot) {
                 transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));

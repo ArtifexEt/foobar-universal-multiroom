@@ -27,6 +27,9 @@ public:
     void toggle_output(const std::string& id);
     void set_output_volume(const std::string& id, int volume);
     void set_master_volume_percent(int volume);
+    void set_playback_metadata(const multiroom::PlaybackMetadata& metadata);
+    void update_playback_position(uint64_t position_ms);
+    void clear_playback_metadata();
     void open_playback_stream(const multiroom::PcmFormat& format);
     void write_playback_pcm(const void* frames, size_t bytes);
     void flush_playback();
@@ -42,6 +45,7 @@ private:
     void refresh_outputs_for_playback();
     void schedule_control_update();
     void schedule_volume_update(const std::vector<std::string>& ids);
+    void schedule_metadata_update();
     void control_update_worker();
     void pairing_worker(std::string id, std::string pin);
 
@@ -60,6 +64,9 @@ private:
     bool control_in_progress_ = false;
     bool control_full_update_requested_ = false;
     std::set<std::string> control_volume_update_ids_;
+    multiroom::PlaybackMetadata playback_metadata_;
+    bool playback_metadata_active_ = false;
+    bool control_metadata_update_requested_ = false;
     bool pairing_in_progress_ = false;
     bool playback_format_valid_ = false;
     int master_volume_percent_ = 100;

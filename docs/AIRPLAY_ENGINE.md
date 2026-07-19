@@ -113,4 +113,22 @@ The UI should display two different ideas clearly:
 10. Add PIN pairing and persisted pair-verify credentials.
 11. Add remote playback feedback for pause, previous, next, and device-side
    volume changes.
-12. Add metadata/artwork.
+12. Harden metadata capability negotiation for receivers that advertise only
+    binary-plist now-playing support instead of the implemented DMAP path.
+
+## Now-playing metadata
+
+The foobar component listens to the main-thread playback callbacks and the
+central now-playing artwork loader. It sends native AirPlay `SET_PARAMETER`
+requests for:
+
+- DMAP-tagged title, artist, album, album artist, composer, genre, year,
+  track/disc numbers, and duration;
+- RTP-relative progress state;
+- JPEG or PNG cover art, with WebP converted to JPEG by foobar's image helper.
+
+A text update with `asac=0` is sent as soon as a new track starts, before its
+artwork finishes loading. This prevents a receiver from showing the previous
+session's cover. The latest metadata snapshot is retained by the transport and
+replayed when a speaker joins an already-open stream. Playback stop clears the
+receiver state before teardown.

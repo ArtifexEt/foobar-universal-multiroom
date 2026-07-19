@@ -65,6 +65,11 @@ without changing the foobar UI.
   repeatedly block PCM delivery or reconnect the selected group.
 - The main foobar2000 volume is treated as a remote AirPlay master volume
   multiplier instead of digitally attenuating the PCM stream.
+- Foobar now-playing callbacks publish the current title, artist, album, album
+  artist, composer, genre, year, track/disc numbers, duration, position, and
+  front-cover artwork to active AirPlay sessions. New sessions receive the
+  current snapshot, while track starts and playback stop explicitly clear stale
+  receiver metadata before the next artwork is available.
 - macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
   for the portable core/AirPlay path that uses system Bonjour and sends a real
   generated tone through `MultiroomEngine`.
