@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cmath>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -554,6 +555,14 @@ int main() {
                      "metadata progress should not underflow before the first RTP packet");
         ok &= expect(multiroom::airplay::airplay_progress_display_start(20000) == 4640,
                      "metadata progress should retain its receiver display lead after startup");
+        ok &= expect(std::abs(multiroom::airplay::airplay_volume_db(0) - (-144.0)) < 0.0001 &&
+                     std::abs(multiroom::airplay::airplay_volume_db(50) - (-15.0)) < 0.0001 &&
+                     std::abs(multiroom::airplay::airplay_volume_db(100)) < 0.0001,
+                     "AirPlay volume should map foobar percentages to receiver -30..0 dB values");
+        ok &= expect(
+            multiroom::airplay::make_airplay_progress_parameter_body(metadata, 48000, 960000) ==
+                "progress: 224640/960000/12000000\r\n",
+            "AirPlay progress should include the complete 245 second track end timestamp");
 
         bool sessions_ready = true;
         for (const auto& session : sessions) {

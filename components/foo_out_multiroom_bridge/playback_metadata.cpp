@@ -37,6 +37,14 @@ uint64_t milliseconds_from_seconds(double value) {
     return static_cast<uint64_t>(std::llround(milliseconds));
 }
 
+uint64_t current_playback_duration_ms() {
+    try {
+        return milliseconds_from_seconds(playback_control::get()->playback_get_length_ex());
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
 void apply_info(multiroom::PlaybackMetadata& metadata, const file_info& info, bool replace_empty) {
     const auto assign = [replace_empty](std::string& target, std::string value) {
         if (replace_empty || !value.empty()) {
@@ -112,6 +120,14 @@ public:
             }
         }
 
+        // playback_get_length_ex() also consults dynamic playback information.
+        // This covers inputs whose metadb/file_info length is not populated at
+        // the first new-track callback even though foobar knows the duration.
+        const auto playback_duration = current_playback_duration_ms();
+        if (playback_duration != 0) {
+            metadata_.duration_ms = playback_duration;
+        }
+
         MultiroomComponentState::instance().set_playback_metadata(metadata_);
     }
 
@@ -140,9 +156,16 @@ public:
         if (track->get_browse_info_merged(info)) {
             const auto artwork = metadata_.artwork;
             const auto artwork_mime = metadata_.artwork_mime;
+            const auto duration_ms = metadata_.duration_ms;
             const auto position_ms = metadata_.position_ms;
             const auto paused = metadata_.paused;
             apply_info(metadata_, info, true);
+            if (metadata_.duration_ms == 0) {
+                metadata_.duration_ms = current_playback_duration_ms();
+            }
+            if (metadata_.duration_ms == 0) {
+                metadata_.duration_ms = duration_ms;
+            }
             metadata_.artwork = artwork;
             metadata_.artwork_mime = artwork_mime;
             metadata_.position_ms = position_ms;
@@ -162,7 +185,16 @@ public:
     void on_playback_time(double time) override {
         if (!active_) return;
         metadata_.position_ms = milliseconds_from_seconds(time);
-        MultiroomComponentState::instance().update_playback_position(metadata_.position_ms);
+        const auto playback_duration = current_playback_duration_ms();
+        if (playback_duration != 0 && playback_duration != metadata_.duration_ms) {
+            // Some decoders expose their length only after playback has begun.
+            // Resend the complete snapshot once so the receiver obtains a real
+            // progress end timestamp instead of current/current.
+            metadata_.duration_ms = playback_duration;
+            MultiroomComponentState::instance().set_playback_metadata(metadata_);
+        } else {
+            MultiroomComponentState::instance().update_playback_position(metadata_.position_ms);
+        }
     }
 
     void on_volume_change(float) override {}
