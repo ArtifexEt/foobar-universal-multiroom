@@ -1084,8 +1084,11 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
             last_error_.clear();
         }
 
-        replace_stored_output_selection(*group, known_outputs);
         for (const auto& output : changed_outputs) update_stored_output_state(output);
+        // The full preset is authoritative. Write it after the current cache
+        // snapshot so a discovered AirPlay 2 member which is temporarily
+        // missing its endpoint remains queued for the next discovery result.
+        replace_stored_output_selection(*group, known_outputs);
         notify_multiroom_speaker_toolbar_changed();
         schedule_control_update();
         if (no_group_members_available && !refresh_in_progress()) refresh_outputs();
