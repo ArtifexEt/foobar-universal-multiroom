@@ -91,15 +91,18 @@ without changing the foobar UI.
 ## Adding the speaker selector to foobar2000
 
 - In a Buttons toolbar, open its configuration and add
-  `Playback > AirPlay Speakers...`.
-- For the live group label, add foobar2000's Toolbar Dropdown element and
-  choose `AirPlay` as its data source.
-- In Layout Editing Mode, the standalone utility element is named
-  `AirPlay Speaker Selector Toolbar` and can be placed next to playback
-  controls or the seekbar.
+  `Playback > AirPlay Speakers...` for an icon/button that opens the picker.
+- For the live destination shown in the toolbar row, right-click the toolbar
+  header, add foobar2000's `Toolbar Dropdown`, then select `AirPlay Output` as
+  its data source. It shows `idle`, `connecting`, or the receiver(s) whose
+  AirPlay sessions are actually ready.
+- In Default UI Layout Editing Mode, the standalone playback-information
+  element is named `AirPlay Output` and can be placed next to playback
+  controls, the seekbar, or volume.
 
-The command, native dropdown, and standalone element all open or control the
-same persisted speaker group.
+The command, native dropdown, and standalone element use the same picker and
+persisted speaker group. The two live-label surfaces report active sessions,
+not merely saved checkboxes.
 
 ## Repository Layout
 

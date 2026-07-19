@@ -11,13 +11,15 @@ Apple Music. Preferences and protocol diagnostics are intentionally secondary.
 | Area | State | Notes |
 | --- | --- | --- |
 | Playback command | Complete | `Playback > AirPlay Speakers...` opens the full picker and can be assigned to foobar's Buttons toolbar. |
-| Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `AirPlay`, with a live group label, quick toggles, and an entry into the full picker. |
-| Dockable compact control | Complete | Default UI utility element with a scalable AirPlay audio glyph, current selection, keyboard activation, focus state, light/dark colors, and a compact icon-only layout. |
-| Speaker popup | Complete for normal selection | Apple Music-style hierarchy with a centered AirPlay header, `Speakers & TVs` section, flat device rows, speaker glyphs, trailing check indicators, custom accent sliders, percentages, conditional PIN pairing, rounded popover clipping, refresh footer, scrolling, theme adaptation, and automatic dismissal. |
+| Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `AirPlay Output`, with an active-session label, quick toggles, and an entry into the full picker. Add it to the toolbar header through foobar's `Toolbar Dropdown` control and choose this data source. |
+| Dockable compact control | Complete | Default UI playback-information element named `AirPlay Output`, with a scalable AirPlay audio glyph, active destination (`idle`, `connecting`, or ready receivers), keyboard activation, focus state, and light/dark colors. |
+| Speaker popup | Complete for normal selection | Apple Music-style hierarchy with a clean centered `AirPlay` title, `Speakers & TVs` section, flat device rows, speaker glyphs, trailing check indicators, custom accent sliders, percentages, conditional PIN pairing, rounded popover clipping, refresh footer, scrolling, theme adaptation, and automatic dismissal. Parent and child surfaces are fully invalidated after scroll/control rebuilds so stale or blank fragments are not retained. |
 | Persisted selection and volume | Complete | Canonical speaker IDs and aliases retain selection/volume across discovery identity promotion. |
 | Live per-speaker volume | Fixed in this pass | Thumb tracking updates the UI locally; the final value is persisted and sent through a coalesced volume-only path. It no longer runs output selection, session connection, and all-device volume work for every pixel of a drag. |
 | Master volume | Complete | Foobar's main volume remains a group multiplier and now shares the coalesced volume-only path. |
 | Receiver playback controls | Complete | Encrypted AirPlay events for play, pause, toggle, stop, next, and previous are applied to foobar on its main thread; duplicate group events are suppressed. |
+| Non-blocking UI/startup | Fixed in this pass | Popup/preferences discovery starts on the refresh worker. AirPlay discovery, pair verification, session SETUP, metadata setup, receiver connection, and seek/flush network work run on workers instead of blocking `output::open()` or a foobar UI callback. |
+| Current playback destination | Fixed in this pass | Toolbar labels are derived from ready/open AirPlay sessions rather than the persisted speaker checkboxes, and are refreshed on connect, reconfiguration, failure, and stop. |
 
 ## Root cause of the volume stall
 
@@ -37,10 +39,24 @@ The corrected split is:
 - a late UI value is preserved if it arrives while a control update is in
   flight.
 
+## Repaint and startup stalls corrected
+
+The popup previously relied on `WM_ERASEBKGND`, while most state changes called
+`Invalidate()` without requesting an erase. Destroying and recreating child
+trackbars during scroll therefore exposed regions which the next `WM_PAINT`
+did not fill. The popup now paints its entire background in `WM_PAINT` and
+invalidates parent plus child windows as one redraw operation.
+
+The speaker refresh entry point also called `start_discovery()` before creating
+its worker, and the foobar output called the full AirPlay connection path from
+`output::open()`. Both paths could include Bonjour waits and RTSP/crypto network
+round trips. Discovery now begins inside the refresh worker, while the output
+queues PCM and lets its render worker establish the native AirPlay session.
+
 ## Apple Music parity achieved
 
-- a compact AirPlay audio glyph instead of a text-only generic button;
-- a centered AirPlay glyph/title header and a separate `Speakers & TVs` section;
+- a compact AirPlay audio glyph instead of a text-only generic toolbar button;
+- a clean centered AirPlay title and a separate `Speakers & TVs` section;
 - flat, spacious device rows with a speaker glyph on the leading edge, the
   selection control on the trailing edge, and restrained inset dividers;
 - per-device volume directly beneath the device name, without turning each
@@ -50,7 +66,7 @@ The corrected split is:
 - PIN controls shown only when discovery reports an explicit password/PIN
   requirement, so transient AirPlay 2 encryption does not clutter the normal
   picker and it stays focused on routing;
-- current group shown directly in the wide toolbar state;
+- actual ready playback destination shown directly in the toolbar state;
 - icon-only fallback at narrow toolbar widths;
 - consistent light and dark appearances derived from foobar theme colors, with
   a dark Apple-style default for the command surface that has no UI callback.
@@ -78,3 +94,7 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
 8. Add optional compact now-playing context to the local speaker popup only if
    it does not displace routing controls. Protocol delivery of current metadata
    and artwork to receivers is implemented independently of this UI choice.
+9. The foobar SDK exposes a dropdown data source and addable Default UI element,
+   but not a component-owned command that inserts itself into the user's layout.
+   Validate the documented `Toolbar Dropdown > AirPlay Output` flow against the
+   exact Default UI version used for packaged-artifact testing.
