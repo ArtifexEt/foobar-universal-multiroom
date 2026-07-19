@@ -24,6 +24,7 @@ struct StoredOutputState {
     std::string output_id;
     bool selected = false;
     int volume = 50;
+    bool visible_in_dropdown = true;
 };
 
 std::wstring widen_utf8(const std::string& text) {
@@ -104,7 +105,9 @@ std::vector<StoredOutputState> parse_output_state_text(const std::string& text) 
     std::string line;
     while (std::getline(lines, line)) {
         const auto fields = split_pipe_fields(line);
-        if (fields.size() != 3 || fields[0].empty()) {
+        // The fourth field was added after the original selected/volume
+        // format. Existing three-field settings migrate as visible.
+        if ((fields.size() != 3 && fields.size() != 4) || fields[0].empty()) {
             continue;
         }
 
@@ -117,6 +120,7 @@ std::vector<StoredOutputState> parse_output_state_text(const std::string& text) 
         item.output_id = fields[0];
         item.selected = fields[1] == "1";
         item.volume = std::clamp(volume, 0, 100);
+        item.visible_in_dropdown = fields.size() < 4 || fields[3] != "0";
         result.push_back(std::move(item));
     }
     return result;
@@ -130,7 +134,8 @@ std::string format_output_state_text(const std::vector<StoredOutputState>& state
         }
         out << state.output_id << '|'
             << (state.selected ? '1' : '0') << '|'
-            << std::clamp(state.volume, 0, 100) << '\n';
+            << std::clamp(state.volume, 0, 100) << '|'
+            << (state.visible_in_dropdown ? '1' : '0') << '\n';
     }
     return out.str();
 }
@@ -140,14 +145,12 @@ std::vector<StoredOutputState> load_output_state() {
     return parse_output_state_text(cfg_airplay_output_state.get().c_str());
 }
 
-void save_output_state(std::vector<StoredOutputState> states) {
-    std::lock_guard lock(cfg_airplay_output_state_mutex);
-    const auto serialized = format_output_state_text(states);
-    cfg_airplay_output_state = serialized.c_str();
-}
-
 void update_stored_output_state(const multiroom::OutputDevice& output) {
-    auto states = load_output_state();
+    // Selection, volume, and dropdown visibility can be updated by different
+    // UI/worker threads. Keep the read-modify-write transaction under one lock
+    // so one preference cannot overwrite another with an older snapshot.
+    std::lock_guard lock(cfg_airplay_output_state_mutex);
+    auto states = parse_output_state_text(cfg_airplay_output_state.get().c_str());
     states.erase(
         std::remove_if(states.begin(), states.end(), [&](const auto& state) {
             return std::find(output.aliases.begin(), output.aliases.end(), state.output_id) != output.aliases.end();
@@ -161,6 +164,7 @@ void update_stored_output_state(const multiroom::OutputDevice& output) {
     updated.output_id = output.id;
     updated.selected = output.selected;
     updated.volume = std::clamp(output.volume, 0, 100);
+    updated.visible_in_dropdown = output.visible_in_dropdown;
 
     if (it == states.end()) {
         states.push_back(std::move(updated));
@@ -168,7 +172,8 @@ void update_stored_output_state(const multiroom::OutputDevice& output) {
         *it = std::move(updated);
     }
 
-    save_output_state(std::move(states));
+    const auto serialized = format_output_state_text(states);
+    cfg_airplay_output_state = serialized.c_str();
 }
 
 void apply_stored_output_state(std::vector<multiroom::OutputDevice>& outputs) {
@@ -183,6 +188,7 @@ void apply_stored_output_state(std::vector<multiroom::OutputDevice>& outputs) {
         }
         output.selected = it->selected;
         output.volume = it->volume;
+        output.visible_in_dropdown = it->visible_in_dropdown;
         if (it->output_id != output.id) {
             update_stored_output_state(output);
         }
@@ -264,6 +270,7 @@ void preserve_user_output_state(
         output.volume = it->volume;
         output.offset_ms = it->offset_ms;
         output.measured_latency_ms = it->measured_latency_ms;
+        output.visible_in_dropdown = it->visible_in_dropdown;
     }
 }
 
@@ -886,6 +893,27 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
     }
 }
 
+void MultiroomComponentState::set_output_dropdown_visibility(const std::string& id, bool visible) {
+    multiroom::OutputDevice updated_output;
+    bool changed = false;
+    {
+        std::lock_guard lock(mutex_);
+        const auto output_it = std::find_if(cached_outputs_.begin(), cached_outputs_.end(), [&](const auto& output) {
+            return output.id == id;
+        });
+        if (output_it != cached_outputs_.end() && output_it->visible_in_dropdown != visible) {
+            output_it->visible_in_dropdown = visible;
+            updated_output = *output_it;
+            changed = true;
+        }
+        last_error_.clear();
+    }
+    if (changed) {
+        update_stored_output_state(updated_output);
+        notify_multiroom_speaker_toolbar_changed();
+    }
+}
+
 void MultiroomComponentState::set_output_volume(const std::string& id, int volume) {
     try {
         multiroom::OutputDevice updated_output;
@@ -1180,21 +1208,21 @@ void MultiroomComponentState::report_playback_failure(const std::string& message
 
 std::wstring MultiroomComponentState::playback_destination_label() {
     std::lock_guard lock(mutex_);
-    if (playback_connecting_) return L"AirPlay - connecting...";
-    if (!playback_open_.load() || active_output_names_.empty()) return L"AirPlay - idle";
+    if (playback_connecting_) return L"Connecting...";
+    if (!playback_open_.load() || active_output_names_.empty()) return L"Idle";
     if (active_output_names_.size() == 1) return active_output_names_.front();
     return active_output_names_.front() + L" +" + std::to_wstring(active_output_names_.size() - 1);
 }
 
 std::wstring MultiroomComponentState::status_text() {
     std::lock_guard lock(mutex_);
-    if (!last_error_.empty()) return L"AirPlay discovery error: " + last_error_;
-    if (!discovery_started_) return L"AirPlay discovery: not started";
-    if (pairing_in_progress_) return L"AirPlay speakers: pairing";
-    if (control_in_progress_) return L"AirPlay speakers: applying selection";
+    if (!last_error_.empty()) return L"Discovery error: " + last_error_;
+    if (!discovery_started_) return L"Discovery: not started";
+    if (pairing_in_progress_) return L"Speakers: pairing";
+    if (control_in_progress_) return L"Speakers: applying selection";
     if (refresh_in_progress_) {
         std::wstringstream stream;
-        stream << L"AirPlay discovery: scanning";
+        stream << L"Discovery: scanning";
         if (!cached_outputs_.empty()) {
             stream << L", " << cached_outputs_.size() << L" cached";
         }
@@ -1207,7 +1235,7 @@ std::wstring MultiroomComponentState::status_text() {
     }
 
     std::wstringstream stream;
-    stream << L"AirPlay discovery: " << cached_outputs_.size() << L" speaker";
+    stream << L"Discovery: " << cached_outputs_.size() << L" speaker";
     if (cached_outputs_.size() != 1) stream << L"s";
     stream << L", " << selected << L" selected, " << refresh_count_ << L" scan";
     if (refresh_count_ != 1) stream << L"s";

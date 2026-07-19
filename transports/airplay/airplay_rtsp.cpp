@@ -770,7 +770,7 @@ std::string make_announce_sdp(const OutputDevice& output, const PcmFormat& forma
     std::ostringstream sdp;
     sdp << "v=0\r\n";
     sdp << "o=FoobarUniversalMultiroom " << session_id << " 1 IN IP4 0.0.0.0\r\n";
-    sdp << "s=Foobar Universal Multiroom\r\n";
+    sdp << "s=Universal Multiroom Audio Bridge\r\n";
     sdp << "c=IN IP4 " << (output.endpoint_host.empty() ? "0.0.0.0" : output.endpoint_host) << "\r\n";
     sdp << "t=0 0\r\n";
     sdp << "m=audio 0 RTP/AVP 96\r\n";

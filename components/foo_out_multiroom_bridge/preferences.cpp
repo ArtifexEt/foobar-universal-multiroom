@@ -2,6 +2,7 @@
 #include "component_version.h"
 #include "multiroom_component_state.h"
 #include "preferences_resource.h"
+#include "product_identity.h"
 
 #include <algorithm>
 #include <array>
@@ -209,6 +210,8 @@ private:
         case WM_SIZE:
             self->layout_status_page();
             return TRUE;
+        case WM_NOTIFY:
+            return self->on_notify(reinterpret_cast<NMHDR*>(lp));
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
@@ -274,7 +277,9 @@ private:
         HWND list = find_dlg_item(wnd_, idSpeakerList);
         if (list == nullptr) return;
 
-        ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        ListView_SetExtendedListViewStyle(
+            list,
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES);
 
         while (ListView_DeleteColumn(list, 0)) {
         }
@@ -469,15 +474,14 @@ private:
         if (list == nullptr) return TRUE;
 
         const int selected = ListView_GetNextItem(list, -1, LVNI_SELECTED);
-        const auto outputs = MultiroomComponentState::instance().outputs();
-        if (selected < 0 || selected >= static_cast<int>(outputs.size())) {
-            ::MessageBoxW(wnd_, L"Select an AirPlay speaker from the list.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+        if (selected < 0 || selected >= static_cast<int>(speaker_list_output_ids_.size())) {
+            ::MessageBoxW(wnd_, L"Select a speaker from the list.", MULTIROOM_PRODUCT_NAME_WIDE, MB_OK | MB_ICONWARNING);
             return TRUE;
         }
 
         const auto pin = narrow_pin(trim(text_from_item(wnd_, idPairPin)));
         if (pin.empty()) {
-            ::MessageBoxW(wnd_, L"Enter the AirPlay PIN shown by the speaker or TV.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            ::MessageBoxW(wnd_, L"Enter the PIN shown by the speaker or TV.", MULTIROOM_PRODUCT_NAME_WIDE, MB_OK | MB_ICONWARNING);
             if (HWND pin_control = find_dlg_item(wnd_, idPairPin); pin_control != nullptr) {
                 ::SetFocus(pin_control);
                 ::SendMessageW(pin_control, EM_SETSEL, 0, -1);
@@ -485,7 +489,9 @@ private:
             return TRUE;
         }
 
-        MultiroomComponentState::instance().pair_output(outputs[static_cast<size_t>(selected)].id, pin);
+        MultiroomComponentState::instance().pair_output(
+            speaker_list_output_ids_[static_cast<size_t>(selected)],
+            pin);
         update_status_page();
         ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
         return TRUE;
@@ -503,6 +509,22 @@ private:
     }
 
     INT_PTR on_notify(NMHDR* header) {
+        if (header != nullptr && header->idFrom == idSpeakerList &&
+            header->code == LVN_ITEMCHANGED && !updating_speaker_list_) {
+            const auto* change = reinterpret_cast<const NMLISTVIEW*>(header);
+            const UINT changed_state = (change->uOldState ^ change->uNewState) & LVIS_STATEIMAGEMASK;
+            if ((change->uChanged & LVIF_STATE) != 0 && changed_state != 0 && change->iItem >= 0) {
+                if (change->iItem < static_cast<int>(speaker_list_output_ids_.size())) {
+                    const bool visible = ListView_GetCheckState(
+                        find_dlg_item(wnd_, idSpeakerList),
+                        change->iItem) != FALSE;
+                    MultiroomComponentState::instance().set_output_dropdown_visibility(
+                        speaker_list_output_ids_[static_cast<size_t>(change->iItem)],
+                        visible);
+                }
+            }
+            return TRUE;
+        }
         if (header != nullptr && header->idFrom == idTabs && header->code == TCN_SELCHANGE) {
             HWND tabs = find_dlg_item(wnd_, idTabs);
             const int selected = tabs != nullptr ? TabCtrl_GetCurSel(tabs) : -1;
@@ -564,10 +586,14 @@ private:
         if (list == nullptr) return;
 
         const auto outputs = MultiroomComponentState::instance().outputs();
+        updating_speaker_list_ = true;
         ListView_DeleteAllItems(list);
+        speaker_list_output_ids_.clear();
+        speaker_list_output_ids_.reserve(outputs.size());
 
         for (int index = 0; index < static_cast<int>(outputs.size()); ++index) {
             const auto& output = outputs[static_cast<size_t>(index)];
+            speaker_list_output_ids_.push_back(output.id);
             const std::array<std::wstring, 4> cells = {
                 widen_utf8(output.name.empty() ? output.id : output.name),
                 speaker_state_text(output),
@@ -587,21 +613,25 @@ private:
                     ::SendMessageW(list, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&item));
                 }
             }
+            ListView_SetCheckState(list, index, output.visible_in_dropdown ? TRUE : FALSE);
         }
+        updating_speaker_list_ = false;
     }
 
     preferences_page_callback::ptr callback_;
     HWND wnd_ = nullptr;
     fb2k::CCoreDarkModeHooks dark_;
     std::array<HWND, static_cast<size_t>(Page::Count)> page_wnds_ = {};
+    std::vector<std::string> speaker_list_output_ids_;
     int selected_page_ = 0;
+    bool updating_speaker_list_ = false;
     HBRUSH background_brush_ = CreateSolidBrush(kDarkBackground);
     HBRUSH edit_brush_ = CreateSolidBrush(kDarkEditBackground);
 };
 
 class preferences_page_multiroom : public preferences_page_impl<preferences_instance> {
 public:
-    const char* get_name() override { return "Universal Multiroom Bridge"; }
+    const char* get_name() override { return MULTIROOM_PRODUCT_NAME; }
     GUID get_guid() override { return guid_preferences; }
     GUID get_parent_guid() override { return preferences_page::guid_output; }
 };

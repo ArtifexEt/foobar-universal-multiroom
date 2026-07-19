@@ -1,4 +1,4 @@
-# AirPlay Speaker UI Audit
+# Universal Multiroom Audio Bridge UI Audit
 
 ## Scope
 
@@ -10,10 +10,11 @@ Apple Music. Preferences and protocol diagnostics are intentionally secondary.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Playback command | Complete | `Playback > AirPlay Speakers...` opens the full picker and can be assigned to foobar's Buttons toolbar. |
-| Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `AirPlay Output`, with an active-session label, quick toggles, and an entry into the full picker. Add it to the toolbar header through foobar's `Toolbar Dropdown` control and choose this data source. |
-| Dockable compact control | Complete | Default UI playback-information element named `AirPlay Output`, with a scalable AirPlay audio glyph, active destination (`idle`, `connecting`, or ready receivers), keyboard activation, focus state, and light/dark colors. |
-| Speaker popup | Complete for normal selection | Apple Music-style hierarchy with a clean centered `AirPlay` title, `Speakers & TVs` section, flat device rows, speaker glyphs, trailing check indicators, custom accent sliders, percentages, conditional PIN pairing, rounded popover clipping, refresh footer, scrolling, theme adaptation, and automatic dismissal. Parent and child surfaces are fully invalidated after scroll/control rebuilds so stale or blank fragments are not retained. |
+| Playback command | Complete | `Playback > Universal Multiroom Audio Bridge...` opens the full picker and can be assigned to foobar's Buttons toolbar. |
+| Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `Universal Multiroom Audio Bridge`, with an active-session label, quick toggles, and an entry into the full picker. Add it to the toolbar header through foobar's `Toolbar Dropdown` control and choose this data source. |
+| Dockable compact control | Complete | Default UI playback-information element named `Universal Multiroom Audio Bridge`, with a scalable audio glyph, active destination (`Idle`, `Connecting...`, or ready receivers), keyboard activation, focus state, and light/dark colors. |
+| Speaker popup | Complete for normal selection | Apple Music-style hierarchy with a clean centered product title, `Speakers & TVs` section, flat device rows, speaker glyphs, trailing check indicators, custom accent sliders, percentages, conditional PIN pairing, rounded popover clipping, refresh footer, scrolling, theme adaptation, and automatic dismissal. Parent and child surfaces are fully invalidated after scroll/control rebuilds so stale or blank fragments are not retained. |
+| Dropdown visibility | Complete | Every discovered speaker has a persistent checkbox in Preferences. Clearing it removes only that speaker from the toolbar dropdown; selection and playback state are unchanged, and legacy saved state defaults to visible. |
 | Persisted selection and volume | Complete | Canonical speaker IDs and aliases retain selection/volume across discovery identity promotion. |
 | Live per-speaker volume | Fixed in this pass | Thumb tracking updates the UI locally; the final value is persisted and sent through a coalesced volume-only path. It no longer runs output selection, session connection, and all-device volume work for every pixel of a drag. |
 | Master volume | Complete | Foobar's main volume remains a group multiplier and now shares the coalesced volume-only path. |
@@ -99,5 +100,6 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
    and artwork to receivers is implemented independently of this UI choice.
 9. The foobar SDK exposes a dropdown data source and addable Default UI element,
    but not a component-owned command that inserts itself into the user's layout.
-   Validate the documented `Toolbar Dropdown > AirPlay Output` flow against the
+   Validate the documented `Toolbar Dropdown > Universal Multiroom Audio Bridge`
+   flow against the
    exact Default UI version used for packaged-artifact testing.

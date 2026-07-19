@@ -145,6 +145,7 @@
     <ClInclude Include="component_version.h" />
     <ClInclude Include="multiroom_component_state.h" />
     <ClInclude Include="preferences_resource.h" />
+    <ClInclude Include="product_identity.h" />
     <ClInclude Include="speaker_selector_popup.h" />
     <ClInclude Include="speaker_toolbar.h" />
     <ClInclude Include="stdafx.h" />

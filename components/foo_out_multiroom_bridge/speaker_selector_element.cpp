@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
+#include "product_identity.h"
 #include "speaker_selector_popup.h"
 
 #include <commctrl.h>
@@ -281,7 +282,7 @@ private:
 
         CRect title(kPopupPadding, 0, rc.right - kPopupPadding, kHeaderHeight);
         SelectObjectScope title_scope(dc, title_font_.m_hFont != nullptr ? title_font_.m_hFont : popup_font());
-        WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &title, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+        WIN32_OP_D(dc.DrawTextW(MULTIROOM_PRODUCT_NAME_WIDE, -1, &title, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
 
         SelectObjectScope body_font_scope(dc, popup_font());
         dc.SetTextColor(secondary_text_color());
@@ -634,7 +635,7 @@ private:
             add_control(::CreateWindowExW(
                 0,
                 L"STATIC",
-                status_.empty() ? L"No AirPlay speakers found" : status_.c_str(),
+                status_.empty() ? L"No compatible speakers found" : status_.c_str(),
                 WS_CHILD | WS_VISIBLE | SS_CENTER | SS_EDITCONTROL,
                 kPopupPadding,
                 kHeaderHeight + kSectionHeight + 12,
@@ -658,7 +659,7 @@ private:
             add_control(::CreateWindowExW(
                 0,
                 L"STATIC",
-                L"AirPlay code",
+                L"Pairing code",
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
                 kPopupPadding,
                 footer_top + 9,
@@ -743,13 +744,13 @@ private:
     void pair_selected_output() {
         const auto target_id = pair_target_id();
         if (target_id.empty()) {
-            ::MessageBoxW(m_hWnd, L"Select one AirPlay speaker to pair.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            ::MessageBoxW(m_hWnd, L"Select one speaker to pair.", MULTIROOM_PRODUCT_NAME_WIDE, MB_OK | MB_ICONWARNING);
             return;
         }
 
         const auto pin = narrow_pin(text_from_window(::GetDlgItem(m_hWnd, static_cast<int>(kPairPinEditId))));
         if (pin.empty()) {
-            ::MessageBoxW(m_hWnd, L"Enter the AirPlay PIN shown by the speaker or TV.", L"Universal Multiroom Bridge", MB_OK | MB_ICONWARNING);
+            ::MessageBoxW(m_hWnd, L"Enter the PIN shown by the speaker or TV.", MULTIROOM_PRODUCT_NAME_WIDE, MB_OK | MB_ICONWARNING);
             if (HWND pin_control = ::GetDlgItem(m_hWnd, static_cast<int>(kPairPinEditId)); pin_control != nullptr) {
                 ::SetFocus(pin_control);
                 ::SendMessageW(pin_control, EM_SETSEL, 0, -1);
@@ -1040,7 +1041,7 @@ public:
     }
 
     static void g_get_name(pfc::string_base& out) {
-        out = "AirPlay Output";
+        out = MULTIROOM_PRODUCT_NAME;
     }
 
     static ui_element_config::ptr g_get_default_configuration() {
@@ -1048,7 +1049,7 @@ public:
     }
 
     static const char* g_get_description() {
-        return "Shows the active AirPlay destination and opens the speaker picker; place it in the toolbar row next to playback controls, seekbar, or volume.";
+        return "Shows the active multiroom destination and opens the speaker picker; place it in the toolbar row next to playback controls, seekbar, or volume.";
     }
 
     ui_element_min_max_info get_min_max_info() override {
@@ -1101,7 +1102,7 @@ private:
         const COLORREF border = blend_color(background, text, 35);
         const auto label = MultiroomComponentState::instance().playback_destination_label();
         last_destination_label_ = label;
-        const bool is_idle = label == L"AirPlay - idle";
+        const bool is_idle = label == L"Idle";
         const COLORREF glyph = is_idle ? text : airplay_accent(background);
 
         CBrush background_brush;

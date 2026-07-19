@@ -1,8 +1,9 @@
 #include "stdafx.h"
 #include "component_version.h"
+#include "product_identity.h"
 
 DECLARE_COMPONENT_VERSION(
-    "Universal Multiroom Bridge",
+    MULTIROOM_PRODUCT_NAME,
     MULTIROOM_COMPONENT_VERSION,
     "Native AirPlay 2 multiroom transport component for foobar2000. "
     "This build contains AirPlay 2 discovery classification, a foobar UI speaker selector, "

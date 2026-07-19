@@ -26,6 +26,7 @@ public:
     void pair_output(const std::string& id, const std::string& pin);
     bool pairing_in_progress();
     void toggle_output(const std::string& id);
+    void set_output_dropdown_visibility(const std::string& id, bool visible);
     void set_output_volume(const std::string& id, int volume);
     void set_master_volume_percent(int volume);
     void set_playback_metadata(const multiroom::PlaybackMetadata& metadata);

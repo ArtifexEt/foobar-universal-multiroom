@@ -1,4 +1,5 @@
 #include "preferences_resource.h"
+#include "product_identity.h"
 
 #include <winres.h>
 #include <commctrl.h>
@@ -20,9 +21,9 @@ EXSTYLE WS_EX_CONTROLPARENT
 FONT 8, "MS Shell Dlg", 400, 0, 1
 {
     LTEXT      "Transport", IDC_STATIC, 11, 11, 95, 13
-    LTEXT      "AirPlay discovery: not started", idStatusSummary, 109, 11, 250, 13
+    LTEXT      "Discovery: not started", idStatusSummary, 109, 11, 250, 13
     PUSHBUTTON "Refresh speakers", idRefreshButton, 11, 35, 110, 14
-    LTEXT      "Speakers", IDC_STATIC, 11, 66, 95, 13
+    LTEXT      "Speakers (clear a checkbox to hide from the toolbar dropdown)", IDC_STATIC, 11, 66, 350, 13
     CONTROL    "", idSpeakerList, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 11, 83, 452, 126
     LTEXT      "PIN", idPairPinLabel, 11, 220, 24, 13
     EDITTEXT   idPairPin, 39, 218, 52, 14, ES_AUTOHSCROLL | ES_NUMBER
@@ -34,7 +35,7 @@ STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
 EXSTYLE WS_EX_CONTROLPARENT
 FONT 8, "MS Shell Dlg", 400, 0, 1
 {
-    LTEXT      "Universal Multiroom Bridge", IDC_STATIC, 11, 9, 250, 13
+    LTEXT      MULTIROOM_PRODUCT_NAME, IDC_STATIC, 11, 9, 300, 13
     LTEXT      "", idAboutVersion, 11, 25, 250, 13
     PUSHBUTTON "Buy me a coffee", idSupportButton, 11, 44, 110, 14
     PUSHBUTTON "GitHub repo", idGitHubButton, 125, 44, 110, 14

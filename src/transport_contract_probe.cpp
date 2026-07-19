@@ -45,7 +45,7 @@ void print_capabilities() {
         {"speaker_auth", false},
     };
 
-    std::cout << "Foobar Universal Multiroom transport contract\n";
+    std::cout << "Universal Multiroom Audio Bridge transport contract\n";
     for (const auto& capability : capabilities) {
         std::cout << "- " << capability.name
                   << (capability.required ? " required" : " optional")
@@ -411,7 +411,9 @@ bool exercise_output_registry_retain() {
     auto control_client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
     multiroom::airplay::AirPlayTransport transport(control_client);
     transport.start_discovery();
-    transport.add_discovered_output(make_airplay_loopback_output("legacy-alias", "Speaker", 7501));
+    auto legacy = make_airplay_loopback_output("legacy-alias", "Speaker", 7501);
+    legacy.visible_in_dropdown = false;
+    transport.add_discovered_output(std::move(legacy));
     transport.set_enabled_outputs({"legacy-alias"});
     transport.set_output_volume("legacy-alias", 37);
 
@@ -421,8 +423,9 @@ bool exercise_output_registry_retain() {
     ok &= expect(migrated.size() == 1 &&
                  migrated.front().id == "airplay2-identity" &&
                  migrated.front().selected &&
-                 migrated.front().volume == 37,
-                 "AirPlay identity promotion should preserve alias selection and volume");
+                 migrated.front().volume == 37 &&
+                 !migrated.front().visible_in_dropdown,
+                 "AirPlay identity promotion should preserve alias selection, volume, and UI visibility");
 
     transport.set_enabled_outputs({});
     transport.set_enabled_outputs({"legacy-alias"});
