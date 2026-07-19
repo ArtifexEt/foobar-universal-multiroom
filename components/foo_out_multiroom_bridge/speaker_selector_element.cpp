@@ -720,16 +720,14 @@ private:
         size_t fallback_count = 0;
 
         for (const auto& output : outputs_) {
-            if (!output.supports_airplay2) {
+            if (!output.supports_airplay2 || !output.has_password) {
                 continue;
             }
             if (output.selected) {
                 return output.id;
             }
-            if (output.requires_auth) {
-                fallback = output.id;
-                ++fallback_count;
-            }
+            fallback = output.id;
+            ++fallback_count;
         }
 
         return fallback_count == 1 ? fallback : std::string{};
@@ -906,7 +904,7 @@ private:
 
     bool pairing_controls_visible() const {
         return std::any_of(outputs_.begin(), outputs_.end(), [](const auto& output) {
-            return output.supports_airplay2 && output.requires_auth;
+            return output.supports_airplay2 && output.has_password;
         });
     }
 

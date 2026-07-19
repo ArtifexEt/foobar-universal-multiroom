@@ -46,8 +46,9 @@ The corrected split is:
   output into a separate Windows-style card;
 - blue system-style accent for selected outputs and active slider ranges;
 - a single rounded popover surface with a distinct full-width footer action;
-- PIN controls shown only when discovery reports an AirPlay 2 receiver that
-  requires authentication, so the normal picker stays focused on routing;
+- PIN controls shown only when discovery reports an explicit password/PIN
+  requirement, so transient AirPlay 2 encryption does not clutter the normal
+  picker and it stays focused on routing;
 - current group shown directly in the wide toolbar state;
 - icon-only fallback at narrow toolbar widths;
 - consistent light and dark appearances derived from foobar theme colors, with
