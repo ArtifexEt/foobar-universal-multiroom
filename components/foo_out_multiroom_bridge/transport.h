@@ -38,6 +38,8 @@ struct OutputDevice {
     uint16_t endpoint_port = 0;
     std::map<std::string, std::string> txt_records;
     std::vector<std::string> aliases;
+    // Product UI preference. It does not change selection or transport state.
+    bool visible_in_dropdown = true;
 };
 
 struct PcmFormat {

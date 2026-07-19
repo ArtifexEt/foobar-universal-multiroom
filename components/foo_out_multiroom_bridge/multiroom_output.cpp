@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "component_version.h"
 #include "multiroom_component_state.h"
 
 #include <algorithm>
@@ -82,10 +83,10 @@ public:
 
     static GUID g_get_guid() { return guid_output; }
 
-    static const char* g_get_name() { return "Universal Multiroom Bridge"; }
+    static const char* g_get_name() { return MULTIROOM_PRODUCT_NAME; }
 
     static void g_enum_devices(output_device_enum_callback& callback) {
-        const char name[] = "Selected AirPlay speakers";
+        const char name[] = MULTIROOM_PRODUCT_NAME;
         callback.on_device(guid_device_selected_speakers, name, sizeof(name) - 1);
     }
 

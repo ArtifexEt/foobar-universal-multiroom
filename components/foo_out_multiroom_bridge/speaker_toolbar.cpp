@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "component_version.h"
 #include "multiroom_component_state.h"
 #include "speaker_selector_popup.h"
 #include "speaker_toolbar.h"
@@ -18,7 +19,10 @@ std::mutex g_toolbar_notify_mutex;
 std::vector<fb2k::toolbarDropDownNotify*> g_toolbar_notifications;
 
 bool output_playable(const multiroom::OutputDevice& output) {
-    return output.supports_airplay2 && !output.endpoint_host.empty() && output.endpoint_port != 0;
+    return output.visible_in_dropdown &&
+           output.supports_airplay2 &&
+           !output.endpoint_host.empty() &&
+           output.endpoint_port != 0;
 }
 
 std::vector<multiroom::OutputDevice> playable_outputs() {
@@ -61,11 +65,11 @@ public:
     }
 
     void getShortName(pfc::string_base& out) override {
-        out = "AirPlay Output";
+        out = MULTIROOM_PRODUCT_NAME;
     }
 
     void getLongName(pfc::string_base& out) override {
-        out = "Active Universal Multiroom AirPlay destination and speaker selector";
+        out = "Active destination and speaker selector for " MULTIROOM_PRODUCT_NAME;
     }
 
     size_t getNumValues() override {
@@ -160,7 +164,7 @@ public:
     void get_name(t_uint32 index, pfc::string_base& out) override {
         switch (index) {
         case cmd_airplay_speakers:
-            out = "AirPlay Speakers...";
+            out = MULTIROOM_PRODUCT_NAME "...";
             break;
         default:
             uBugCheck();
@@ -170,7 +174,7 @@ public:
     bool get_description(t_uint32 index, pfc::string_base& out) override {
         switch (index) {
         case cmd_airplay_speakers:
-            out = "Opens the Universal Multiroom AirPlay speaker picker; add this command to a toolbar for a compact speaker button.";
+            out = "Opens the speaker picker for " MULTIROOM_PRODUCT_NAME "; add this command to a toolbar for a compact speaker button.";
             return true;
         default:
             return false;

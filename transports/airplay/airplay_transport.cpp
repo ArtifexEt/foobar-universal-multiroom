@@ -201,6 +201,7 @@ void AirPlayTransport::sync_discovered_outputs() {
             device.volume = existing->volume;
             device.offset_ms = existing->offset_ms;
             device.measured_latency_ms = existing->measured_latency_ms;
+            device.visible_in_dropdown = existing->visible_in_dropdown;
         }
 
         registry_.upsert(std::move(device));

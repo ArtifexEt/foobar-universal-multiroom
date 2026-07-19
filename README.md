@@ -1,6 +1,6 @@
-# Foobar Universal Multiroom
+# Universal Multiroom Audio Bridge
 
-Foobar Universal Multiroom is a standalone foobar2000 component for playing
+Universal Multiroom Audio Bridge is a standalone foobar2000 component for playing
 foobar audio on selected network speakers with synchronized multiroom playback.
 
 The first transport target is native AirPlay 2. The plugin owns discovery,
@@ -29,9 +29,9 @@ without changing the foobar UI.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
   volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
-- `AirPlay Speakers...` is available as a normal foobar command and can be
+- `Universal Multiroom Audio Bridge...` is available as a normal foobar command and can be
   placed in the Buttons toolbar to open the compact multi-speaker selector.
-- Foobar2000 2.x also receives a native `AirPlay` toolbar dropdown. It shows the
+- Foobar2000 2.x also receives a native `Universal Multiroom Audio Bridge` toolbar dropdown. It shows the
   current group, exposes quick speaker toggles, and opens the full picker.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
@@ -56,7 +56,7 @@ without changing the foobar UI.
   discovered endpoints.
 - The RTP/L16 sender path remains only as a diagnostic legacy probe path, not
   the MVP or product streaming path.
-- Foobar registers a high-latency `Universal Multiroom Bridge` output device
+- Foobar registers a high-latency `Universal Multiroom Audio Bridge` output device
   that feeds selected AirPlay 2 sessions from the normal foobar output
   pipeline.
 - Per-speaker UI volume changes are sent to active AirPlay sessions with native
@@ -81,6 +81,9 @@ without changing the foobar UI.
   generated tone through `MultiroomEngine`.
 - Still missing before daily use: device-side volume feedback and
   multi-speaker drift/timing hardening.
+- Preferences list every discovered speaker with a visibility checkbox. Clearing
+  it hides that speaker from the toolbar dropdown without changing its selected
+  or connected state; existing settings migrate as visible.
 
 ## TODO
 
@@ -91,13 +94,14 @@ without changing the foobar UI.
 ## Adding the speaker selector to foobar2000
 
 - In a Buttons toolbar, open its configuration and add
-  `Playback > AirPlay Speakers...` for an icon/button that opens the picker.
+  `Playback > Universal Multiroom Audio Bridge...` for a button that opens the picker.
 - For the live destination shown in the toolbar row, right-click the toolbar
-  header, add foobar2000's `Toolbar Dropdown`, then select `AirPlay Output` as
-  its data source. It shows `idle`, `connecting`, or the receiver(s) whose
+  header, add foobar2000's `Toolbar Dropdown`, then select
+  `Universal Multiroom Audio Bridge` as
+  its data source. It shows `Idle`, `Connecting...`, or the receiver(s) whose
   AirPlay sessions are actually ready.
 - In Default UI Layout Editing Mode, the standalone playback-information
-  element is named `AirPlay Output` and can be placed next to playback
+  element is named `Universal Multiroom Audio Bridge` and can be placed next to playback
   controls, the seekbar, or volume.
 
 The command, native dropdown, and standalone element use the same picker and
