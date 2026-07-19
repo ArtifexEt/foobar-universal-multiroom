@@ -1,6 +1,6 @@
 #include "stdafx.h"
-#include "component_version.h"
 #include "multiroom_component_state.h"
+#include "product_identity.h"
 #include "speaker_selector_popup.h"
 #include "speaker_toolbar.h"
 

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "component_version.h"
+#include "product_identity.h"
 
 DECLARE_COMPONENT_VERSION(
     MULTIROOM_PRODUCT_NAME,

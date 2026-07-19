@@ -2,6 +2,7 @@
 #include "component_version.h"
 #include "multiroom_component_state.h"
 #include "preferences_resource.h"
+#include "product_identity.h"
 
 #include <algorithm>
 #include <array>
