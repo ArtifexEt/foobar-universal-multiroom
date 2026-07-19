@@ -420,6 +420,10 @@ int main() {
                      dmap.find("Current Artist") != std::string::npos &&
                      dmap.find("asac") != std::string::npos,
                      "DMAP metadata should contain title, artist, and artwork state tags");
+        ok &= expect(multiroom::airplay::airplay_progress_display_start(0) == 0,
+                     "metadata progress should not underflow before the first RTP packet");
+        ok &= expect(multiroom::airplay::airplay_progress_display_start(20000) == 4640,
+                     "metadata progress should retain its receiver display lead after startup");
 
         bool sessions_ready = true;
         for (const auto& session : sessions) {

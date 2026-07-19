@@ -892,6 +892,13 @@ std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
     return std::string(reinterpret_cast<const char*>(body.data()), body.size());
 }
 
+uint32_t airplay_progress_display_start(uint32_t track_start) {
+    constexpr uint32_t kMetadataLeadFrames = 15360;
+    return track_start >= kMetadataLeadFrames
+        ? track_start - kMetadataLeadFrames
+        : 0;
+}
+
 class AirPlayRtspControlClient::Connection {
     friend class AirPlayRtspControlClient;
 
@@ -1088,7 +1095,7 @@ public:
                     metadata.artwork.size())));
         }
 
-        const auto display = start - 15360u;
+        const auto display = airplay_progress_display_start(start);
         const auto progress = "progress: " + std::to_string(display) + "/" +
             std::to_string(current) + "/" + std::to_string(end) + "\r\n";
         static_cast<void>(request_success(

@@ -175,5 +175,6 @@ std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(std::shar
 std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client();
 
 std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata);
+uint32_t airplay_progress_display_start(uint32_t track_start);
 
 }  // namespace multiroom::airplay
