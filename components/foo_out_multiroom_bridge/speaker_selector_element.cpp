@@ -119,7 +119,8 @@ COLORREF airplay_accent(COLORREF background) {
     return color_is_dark(background) ? RGB(10, 132, 255) : RGB(0, 122, 255);
 }
 
-void draw_airplay_audio_glyph(CDCHandle dc, CPoint center, COLORREF color, int radius) {
+void draw_airplay_audio_glyph(HDC hdc, CPoint center, COLORREF color, int radius) {
+    CDCHandle dc(hdc);
     CPen pen;
     WIN32_OP_D(pen.CreatePen(PS_SOLID, (std::max)(1, radius / 5), color) != nullptr);
     SelectObjectScope pen_scope(dc, pen);
@@ -999,9 +1000,9 @@ private:
         SelectObjectScope font_scope(dc, reinterpret_cast<HGDIOBJ>(m_callback->query_font_ex(ui_font_default)));
 
         if (button.Width() < 70) {
-            draw_airplay_audio_glyph(dc, CPoint(button.CenterPoint().x, button.CenterPoint().y - 3), glyph, 9);
+            draw_airplay_audio_glyph(dc.m_hDC, CPoint(button.CenterPoint().x, button.CenterPoint().y - 3), glyph, 9);
         } else {
-            draw_airplay_audio_glyph(dc, CPoint(button.left + 18, button.CenterPoint().y - 3), glyph, 8);
+            draw_airplay_audio_glyph(dc.m_hDC, CPoint(button.left + 18, button.CenterPoint().y - 3), glyph, 8);
             CRect text_rect = button;
             text_rect.DeflateRect(35, 1, 22, 1);
             const auto display = has_selection ? label : std::wstring(L"AirPlay");
