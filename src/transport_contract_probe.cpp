@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <airplay_crypto.h>
+
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
 #include "../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../transports/airplay/airplay_transport.h"
@@ -69,6 +71,26 @@ multiroom::OutputDevice make_airplay_loopback_output(
     return output;
 }
 
+std::string make_airplay_remote_command_message(
+    int command,
+    const std::string& command_id,
+    const std::string& type = "sendMediaRemoteCommand") {
+    using namespace fxchain::airplay::bplist;
+    Dict params;
+    params.emplace_back(
+        "kMRMediaRemoteOptionCommandID",
+        Value::str(command_id));
+
+    Dict root;
+    root.emplace_back("modernMediaRemoteCommand", Value::str(std::to_string(command)));
+    root.emplace_back("type", Value::str(type));
+    root.emplace_back("params", Value::object(std::move(params)));
+    const auto encoded = encode(Value::object(std::move(root)));
+    const std::string body(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    return "POST /command RTSP/1.0\r\nCSeq: 7\r\nContent-Type: application/x-apple-binary-plist\r\nContent-Length: " +
+        std::to_string(body.size()) + "\r\n\r\n" + body;
+}
+
 class SelectiveFailingControlClient final : public multiroom::airplay::AirPlayControlClient {
 public:
     explicit SelectiveFailingControlClient(std::set<std::string> failing_outputs)
@@ -85,6 +107,11 @@ public:
         result.credentials.accessory_identifier = {'s', 'e', 'l', 'e', 'c', 't', 'i', 'v', 'e'};
         result.credentials.accessory_public_key.assign(32, 0x44);
         return result;
+    }
+
+    void set_remote_command_handler(
+        multiroom::airplay::AirPlayRemoteCommandHandler handler) override {
+        static_cast<void>(handler);
     }
 
     multiroom::airplay::AirPlayNegotiatedSession open(
@@ -141,6 +168,70 @@ private:
     size_t open_count_ = 0;
     std::vector<std::string> audio_output_ids_;
 };
+
+bool exercise_airplay_remote_commands() {
+    using multiroom::airplay::AirPlayRemoteCommand;
+    const std::vector<std::pair<int, AirPlayRemoteCommand>> mappings = {
+        {0, AirPlayRemoteCommand::Play},
+        {1, AirPlayRemoteCommand::Pause},
+        {2, AirPlayRemoteCommand::TogglePlayPause},
+        {3, AirPlayRemoteCommand::Stop},
+        {4, AirPlayRemoteCommand::NextTrack},
+        {5, AirPlayRemoteCommand::PreviousTrack},
+    };
+
+    bool ok = true;
+    const auto supported_body = multiroom::airplay::make_airplay_remote_supported_commands_body();
+    const auto supported = fxchain::airplay::bplist::decode(
+        fxchain::airplay::Bytes(supported_body.begin(), supported_body.end()));
+    const auto* supported_params = supported ? supported->find("params") : nullptr;
+    const auto* supported_commands = supported_params ?
+        supported_params->find("mrSupportedCommandsFromSender") : nullptr;
+    ok &= expect(supported &&
+                 supported->find("type") &&
+                 supported->find("type")->asStr() == "updateMRSupportedCommands" &&
+                 supported_commands &&
+                 supported_commands->type == fxchain::airplay::bplist::Value::Type::Arr &&
+                 supported_commands->arr.size() == 6,
+                 "AirPlay sender should advertise six supported receiver playback commands");
+
+    for (const auto& [number, expected] : mappings) {
+        const auto command_id = "remote-command-" + std::to_string(number);
+        const auto event = multiroom::airplay::parse_airplay_remote_command_message(
+            make_airplay_remote_command_message(number, command_id));
+        ok &= expect(event.has_value() &&
+                     event->command == expected &&
+                     event->command_id == command_id,
+                     "AirPlay binary-plist remote command should preserve its action and command ID");
+    }
+
+    ok &= expect(
+        !multiroom::airplay::parse_airplay_remote_command_message(
+            make_airplay_remote_command_message(3, "not-a-command", "updateInfo")),
+        "AirPlay updateInfo events should not be mistaken for playback commands");
+    ok &= expect(
+        !multiroom::airplay::parse_airplay_remote_command_message(
+            make_airplay_remote_command_message(99, "unknown-command")),
+        "unsupported AirPlay remote commands should be ignored");
+
+    auto control_client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
+    multiroom::airplay::AirPlayTransport transport(control_client);
+    std::string received_output;
+    std::optional<multiroom::airplay::AirPlayRemoteCommandEvent> received_event;
+    transport.set_remote_command_handler([&](const auto& output_id, const auto& event) {
+        received_output = output_id;
+        received_event = event;
+    });
+    control_client->emit_remote_command(
+        "living-room",
+        {AirPlayRemoteCommand::Stop, "loopback-stop"});
+    ok &= expect(received_output == "living-room" &&
+                 received_event &&
+                 received_event->command == AirPlayRemoteCommand::Stop &&
+                 received_event->command_id == "loopback-stop",
+                 "AirPlay transport should forward receiver playback commands to its consumer");
+    return ok;
+}
 
 bool exercise_partial_airplay_open_failure() {
     bool ok = true;
@@ -478,6 +569,7 @@ int main() {
         ok &= exercise_no_selected_outputs_sink();
         ok &= exercise_failed_reselection_does_not_drop_pcm();
         ok &= exercise_output_registry_retain();
+        ok &= exercise_airplay_remote_commands();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {

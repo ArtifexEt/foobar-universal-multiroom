@@ -17,6 +17,7 @@ Apple Music. Preferences and protocol diagnostics are intentionally secondary.
 | Persisted selection and volume | Complete | Canonical speaker IDs and aliases retain selection/volume across discovery identity promotion. |
 | Live per-speaker volume | Fixed in this pass | Thumb tracking updates the UI locally; the final value is persisted and sent through a coalesced volume-only path. It no longer runs output selection, session connection, and all-device volume work for every pixel of a drag. |
 | Master volume | Complete | Foobar's main volume remains a group multiplier and now shares the coalesced volume-only path. |
+| Receiver playback controls | Complete | Encrypted AirPlay events for play, pause, toggle, stop, next, and previous are applied to foobar on its main thread; duplicate group events are suppressed. |
 
 ## Root cause of the volume stall
 
@@ -64,8 +65,8 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
 2. Add named group presets and recent groups.
 3. Surface per-speaker session phases and actionable inline errors instead of
    relying mainly on the shared status text and console.
-4. Map encrypted AirPlay event-channel feedback so device-side volume and
-   remote playback actions update foobar and every visible UI surface.
+4. Map device-side volume feedback so receiver changes update foobar and every
+   visible UI surface. Playback actions are already mapped.
 5. Add accessibility metadata for the custom-drawn rows and sliders beyond the
    existing keyboard/focus support.
 6. Validate final spacing, hit targets, scaling, and color contrast on 100%,

@@ -54,9 +54,10 @@ Acceptance:
 - Add presets.
 - Add status/error messages.
 - Add auth warning, optional PIN flow, and persisted pair-verify credentials.
-- Service the encrypted AirPlay 2 event channel for remote pause/next/previous
-  and device-side volume updates.
-- Add metadata forwarding.
+- Extend the implemented encrypted AirPlay 2 play/pause/stop/next/previous
+  feedback with device-side volume updates.
+- Extend the implemented metadata forwarding only as receiver compatibility
+  testing identifies protocol-specific gaps.
 - Add output format preference where speakers expose multiple formats.
 
 ## Phase 5 - Local Spatial Coexistence

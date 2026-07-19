@@ -5,8 +5,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -55,6 +57,24 @@ struct AirPlayPairingResult {
     bool stored = false;
 };
 
+enum class AirPlayRemoteCommand {
+    Play,
+    Pause,
+    TogglePlayPause,
+    Stop,
+    NextTrack,
+    PreviousTrack,
+};
+
+struct AirPlayRemoteCommandEvent {
+    AirPlayRemoteCommand command = AirPlayRemoteCommand::TogglePlayPause;
+    std::string command_id;
+};
+
+using AirPlayRemoteCommandHandler = std::function<void(
+    const std::string& output_id,
+    const AirPlayRemoteCommandEvent& event)>;
+
 class AirPlayPairingStore {
 public:
     virtual ~AirPlayPairingStore() = default;
@@ -67,6 +87,7 @@ public:
     virtual ~AirPlayControlClient() = default;
 
     virtual AirPlayPairingResult pair(const OutputDevice& output, const std::string& pin) = 0;
+    virtual void set_remote_command_handler(AirPlayRemoteCommandHandler handler) = 0;
     virtual AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) = 0;
     virtual void send_audio(
         const std::string& output_id,
@@ -95,6 +116,7 @@ public:
     ~AirPlayRtspControlClient() override;
 
     AirPlayPairingResult pair(const OutputDevice& output, const std::string& pin) override;
+    void set_remote_command_handler(AirPlayRemoteCommandHandler handler) override;
     AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) override;
     void send_audio(
         const std::string& output_id,
@@ -121,15 +143,21 @@ private:
 
     std::optional<AirPlayPairingCredentials> load_pairing_credentials(const OutputDevice& output);
     void save_pairing_credentials(const AirPlayPairingCredentials& credentials);
+    void dispatch_remote_command(
+        const std::string& output_id,
+        const AirPlayRemoteCommandEvent& event);
 
     std::shared_ptr<AirPlayPairingStore> pairing_store_;
     std::map<std::string, AirPlayPairingCredentials> memory_pairing_credentials_;
+    std::mutex remote_command_mutex_;
+    AirPlayRemoteCommandHandler remote_command_handler_;
     std::map<std::string, std::unique_ptr<Connection>> connections_;
 };
 
 class AirPlayLoopbackControlClient final : public AirPlayControlClient {
 public:
     AirPlayPairingResult pair(const OutputDevice& output, const std::string& pin) override;
+    void set_remote_command_handler(AirPlayRemoteCommandHandler handler) override;
     AirPlayNegotiatedSession open(const OutputDevice& output, const PcmFormat& format) override;
     void send_audio(
         const std::string& output_id,
@@ -159,6 +187,9 @@ public:
     PlaybackMetadata last_metadata() const;
     size_t flush_count() const;
     size_t close_count() const;
+    void emit_remote_command(
+        const std::string& output_id,
+        const AirPlayRemoteCommandEvent& event);
 
 private:
     size_t open_count_ = 0;
@@ -169,12 +200,17 @@ private:
     PlaybackMetadata last_metadata_;
     size_t flush_count_ = 0;
     size_t close_count_ = 0;
+    std::mutex remote_command_mutex_;
+    AirPlayRemoteCommandHandler remote_command_handler_;
 };
 
 std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(std::shared_ptr<AirPlayPairingStore> pairing_store = {});
 std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client();
 
 std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata);
+std::string make_airplay_remote_supported_commands_body();
 uint32_t airplay_progress_display_start(uint32_t track_start);
+std::optional<AirPlayRemoteCommandEvent> parse_airplay_remote_command_message(
+    const std::string& message);
 
 }  // namespace multiroom::airplay

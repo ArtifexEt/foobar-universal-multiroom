@@ -276,6 +276,19 @@ void validate_playback_format(const multiroom::PcmFormat& format) {
     }
 }
 
+const char* remote_command_name(multiroom::airplay::AirPlayRemoteCommand command) {
+    using multiroom::airplay::AirPlayRemoteCommand;
+    switch (command) {
+    case AirPlayRemoteCommand::Play: return "play";
+    case AirPlayRemoteCommand::Pause: return "pause";
+    case AirPlayRemoteCommand::TogglePlayPause: return "toggle-play-pause";
+    case AirPlayRemoteCommand::Stop: return "stop";
+    case AirPlayRemoteCommand::NextTrack: return "next";
+    case AirPlayRemoteCommand::PreviousTrack: return "previous";
+    }
+    return "unknown";
+}
+
 class FoobarAirPlayPairingStore final : public multiroom::airplay::AirPlayPairingStore {
 public:
     std::optional<multiroom::airplay::AirPlayPairingCredentials> load(const std::string& output_id) override {
@@ -324,9 +337,15 @@ MultiroomComponentState& MultiroomComponentState::instance() {
 }
 
 MultiroomComponentState::MultiroomComponentState()
-    : transport_(multiroom::airplay::make_airplay_rtsp_control_client(std::make_shared<FoobarAirPlayPairingStore>())) {}
+    : transport_(multiroom::airplay::make_airplay_rtsp_control_client(std::make_shared<FoobarAirPlayPairingStore>())) {
+    transport_.set_remote_command_handler([this](const auto& output_id, const auto& event) {
+        handle_remote_command(output_id, event);
+    });
+}
 
 MultiroomComponentState::~MultiroomComponentState() {
+    shutting_down_.store(true);
+    transport_.set_remote_command_handler({});
     if (refresh_thread_.joinable()) {
         refresh_thread_.join();
     }
@@ -336,6 +355,68 @@ MultiroomComponentState::~MultiroomComponentState() {
     if (pairing_thread_.joinable()) {
         pairing_thread_.join();
     }
+}
+
+void MultiroomComponentState::handle_remote_command(
+    const std::string& output_id,
+    const multiroom::airplay::AirPlayRemoteCommandEvent& event) {
+    if (shutting_down_.load()) {
+        return;
+    }
+
+    if (!event.command_id.empty()) {
+        std::lock_guard lock(mutex_);
+        if (std::find(
+                recent_remote_command_ids_.begin(),
+                recent_remote_command_ids_.end(),
+                event.command_id) != recent_remote_command_ids_.end()) {
+            return;
+        }
+        recent_remote_command_ids_.push_back(event.command_id);
+        if (recent_remote_command_ids_.size() > 64) {
+            recent_remote_command_ids_.pop_front();
+        }
+    }
+
+    FB2K_console_formatter() << "[Universal Multiroom] AirPlay remote command from "
+                              << output_id.c_str() << ": "
+                              << remote_command_name(event.command);
+
+    const auto command = event.command;
+    fb2k::inMainThread([this, command] {
+        if (shutting_down_.load()) {
+            return;
+        }
+
+        try {
+            auto control = playback_control::get();
+            using multiroom::airplay::AirPlayRemoteCommand;
+            switch (command) {
+            case AirPlayRemoteCommand::Play:
+                if (control->is_playing()) control->pause(false);
+                else control->start();
+                break;
+            case AirPlayRemoteCommand::Pause:
+                if (control->is_playing()) control->pause(true);
+                break;
+            case AirPlayRemoteCommand::TogglePlayPause:
+                control->play_or_pause();
+                break;
+            case AirPlayRemoteCommand::Stop:
+                if (control->is_playing()) control->stop();
+                break;
+            case AirPlayRemoteCommand::NextTrack:
+                control->start(playback_control::track_command_next);
+                break;
+            case AirPlayRemoteCommand::PreviousTrack:
+                control->start(playback_control::track_command_prev);
+                break;
+            }
+        } catch (const std::exception& e) {
+            FB2K_console_formatter() << "[Universal Multiroom] Could not apply AirPlay remote command: "
+                                      << e.what();
+        }
+    });
 }
 
 void MultiroomComponentState::ensure_discovery_started() {
@@ -978,6 +1059,39 @@ void MultiroomComponentState::stop_playback() {
         last_error_ = widen_utf8(e.what());
         throw;
     }
+}
+
+void MultiroomComponentState::report_playback_failure(const std::string& message) {
+    {
+        std::lock_guard lock(mutex_);
+        last_error_ = widen_utf8(message);
+    }
+    FB2K_console_formatter() << "[Universal Multiroom] AirPlay stream stopped after transport failure: "
+                              << message.c_str();
+
+    if (shutting_down_.load() || playback_failure_stop_queued_.exchange(true)) {
+        return;
+    }
+
+    fb2k::inMainThread([this] {
+        if (shutting_down_.load()) {
+            playback_failure_stop_queued_.store(false);
+            return;
+        }
+
+        try {
+            auto control = playback_control::get();
+            if (control->is_playing()) {
+                control->stop();
+            } else {
+                stop_playback();
+            }
+        } catch (const std::exception& e) {
+            FB2K_console_formatter() << "[Universal Multiroom] Could not stop foobar after AirPlay failure: "
+                                      << e.what();
+        }
+        playback_failure_stop_queued_.store(false);
+    });
 }
 
 std::wstring MultiroomComponentState::selected_label() {

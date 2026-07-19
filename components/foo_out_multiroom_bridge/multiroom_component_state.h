@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -34,6 +35,7 @@ public:
     void write_playback_pcm(const void* frames, size_t bytes);
     void flush_playback();
     void stop_playback();
+    void report_playback_failure(const std::string& message);
     std::wstring selected_label();
     std::wstring status_text();
 
@@ -48,6 +50,9 @@ private:
     void schedule_metadata_update();
     void control_update_worker();
     void pairing_worker(std::string id, std::string pin);
+    void handle_remote_command(
+        const std::string& output_id,
+        const multiroom::airplay::AirPlayRemoteCommandEvent& event);
 
     std::mutex mutex_;
     std::mutex transport_mutex_;
@@ -71,6 +76,9 @@ private:
     bool playback_format_valid_ = false;
     int master_volume_percent_ = 100;
     std::atomic_bool playback_open_ = false;
+    std::atomic_bool playback_failure_stop_queued_ = false;
+    std::atomic_bool shutting_down_ = false;
+    std::deque<std::string> recent_remote_command_ids_;
     size_t refresh_count_ = 0;
     std::wstring last_error_;
 };
