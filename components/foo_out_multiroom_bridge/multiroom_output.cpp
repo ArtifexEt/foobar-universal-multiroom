@@ -195,18 +195,12 @@ private:
             std::lock_guard lock(queue_mutex_);
             pcm_queue_.clear();
             force_play_ = false;
+            flush_requested_ = true;
             pacing_reset_ = true;
             ++stream_epoch_;
         }
         queue_changed_.notify_all();
         SetEvent(wake_event_);
-
-        try {
-            std::lock_guard send_lock(send_mutex_);
-            MultiroomComponentState::instance().flush_playback();
-        } catch (const std::exception& e) {
-            throw_output_error(e);
-        }
     }
 
     void on_force_play() override {
@@ -224,20 +218,17 @@ private:
         }
 
         stop_stream();
-
-        const multiroom::PcmFormat format{
-            spec.sampleRate,
-            spec.chanCount,
-            kAirPlayBitsPerSample,
-        };
-        try {
-            MultiroomComponentState::instance().open_playback_stream(format);
-        } catch (const std::exception& e) {
-            throw_output_error(e);
-        }
+        // Reset cancellation before the worker exists. Any Stop arriving after
+        // this point must remain visible to the entire asynchronous setup.
+        MultiroomComponentState::instance().prepare_playback_open();
 
         {
             std::lock_guard lock(queue_mutex_);
+            playback_format_ = {
+                spec.sampleRate,
+                spec.chanCount,
+                kAirPlayBitsPerSample,
+            };
             sample_rate_ = spec.sampleRate;
             capacity_frames_ = static_cast<size_t>(
                 std::ceil(std::max(buffer_length_, kMinimumBufferSeconds) * static_cast<double>(sample_rate_)));
@@ -245,6 +236,7 @@ private:
             worker_error_.clear();
             failure_stop_requested_ = false;
             force_play_ = false;
+            flush_requested_ = false;
             pacing_reset_ = true;
             paused_ = false;
             stopping_ = false;
@@ -276,13 +268,37 @@ private:
         auto next_send = Clock::now();
 
         try {
+            multiroom::PcmFormat playback_format;
+            {
+                std::lock_guard lock(queue_mutex_);
+                if (stopping_) return;
+                playback_format = playback_format_;
+            }
+
+            // Discovery, pairing verification and AirPlay session SETUP can take
+            // seconds. output::open() must return immediately so none of that
+            // network work can stall foobar's UI/playback-control thread.
+            MultiroomComponentState::instance().open_playback_stream(playback_format);
+
             std::unique_lock lock(queue_mutex_);
             while (!stopping_) {
                 queue_changed_.wait(lock, [&] {
                     return stopping_ ||
+                        flush_requested_ ||
                         (!paused_ && (pcm_queue_.size() >= kAirPlayPacketFrames || (force_play_ && !pcm_queue_.empty())));
                 });
                 if (stopping_) break;
+                if (flush_requested_) {
+                    flush_requested_ = false;
+                    pacing_reset_ = true;
+                    lock.unlock();
+                    {
+                        std::lock_guard send_lock(send_mutex_);
+                        MultiroomComponentState::instance().flush_playback();
+                    }
+                    lock.lock();
+                    continue;
+                }
                 if (paused_) continue;
 
                 if (pacing_reset_) {
@@ -346,13 +362,19 @@ private:
                 lock.lock();
             }
         } catch (const std::exception& e) {
+            bool cancelled = false;
             {
                 std::lock_guard lock(queue_mutex_);
-                worker_error_ = e.what();
-                failure_stop_requested_ = true;
+                cancelled = stopping_;
+                if (!cancelled) {
+                    worker_error_ = e.what();
+                    failure_stop_requested_ = true;
+                }
                 started_ = false;
             }
-            MultiroomComponentState::instance().report_playback_failure(e.what());
+            if (!cancelled) {
+                MultiroomComponentState::instance().report_playback_failure(e.what());
+            }
         } catch (...) {
             const std::string message = "Unknown AirPlay render thread failure.";
             {
@@ -379,6 +401,7 @@ private:
             pcm_queue_.clear();
             worker_error_.clear();
             force_play_ = false;
+            flush_requested_ = false;
             pacing_reset_ = true;
             failure_stop_requested_ = false;
             ++stream_epoch_;
@@ -387,6 +410,7 @@ private:
         SetEvent(wake_event_);
 
         if (render_thread_.joinable()) {
+            MultiroomComponentState::instance().cancel_pending_playback_open();
             render_thread_.join();
         }
         in_flight_frames_.store(0);
@@ -411,12 +435,14 @@ private:
     std::string worker_error_;
     size_t capacity_frames_ = 44100;
     uint32_t sample_rate_ = 44100;
+    multiroom::PcmFormat playback_format_{44100, 2, kAirPlayBitsPerSample};
     uint64_t stream_epoch_ = 0;
     bool paused_ = false;
     bool stopping_ = true;
     bool started_ = false;
     bool stream_open_ = false;
     bool force_play_ = false;
+    bool flush_requested_ = false;
     bool pacing_reset_ = true;
     bool failure_stop_requested_ = false;
     HANDLE wake_event_ = nullptr;

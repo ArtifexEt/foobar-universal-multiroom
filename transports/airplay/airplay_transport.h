@@ -31,6 +31,8 @@ public:
     void clear_playback_metadata() override;
     void open_stream(const PcmFormat& format) override;
     void connect_selected_outputs();
+    void reset_pending_open_cancel();
+    void cancel_pending_open();
     void write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) override;
     void flush() override;
     void stop() override;

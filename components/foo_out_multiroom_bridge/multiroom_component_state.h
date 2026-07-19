@@ -31,12 +31,14 @@ public:
     void set_playback_metadata(const multiroom::PlaybackMetadata& metadata);
     void update_playback_position(uint64_t position_ms);
     void clear_playback_metadata();
+    void prepare_playback_open();
+    void cancel_pending_playback_open();
     void open_playback_stream(const multiroom::PcmFormat& format);
     void write_playback_pcm(const void* frames, size_t bytes);
     void flush_playback();
     void stop_playback();
     void report_playback_failure(const std::string& message);
-    std::wstring selected_label();
+    std::wstring playback_destination_label();
     std::wstring status_text();
 
 private:
@@ -63,6 +65,7 @@ private:
     std::thread control_thread_;
     std::thread pairing_thread_;
     std::vector<multiroom::OutputDevice> cached_outputs_;
+    std::vector<std::wstring> active_output_names_;
     bool discovery_started_ = false;
     bool refresh_in_progress_ = false;
     bool refresh_requested_ = false;
@@ -74,8 +77,10 @@ private:
     bool control_metadata_update_requested_ = false;
     bool pairing_in_progress_ = false;
     bool playback_format_valid_ = false;
+    bool playback_connecting_ = false;
     int master_volume_percent_ = 100;
     std::atomic_bool playback_open_ = false;
+    std::atomic_bool playback_open_cancel_requested_ = false;
     std::atomic_bool playback_failure_stop_queued_ = false;
     std::atomic_bool shutting_down_ = false;
     std::deque<std::string> recent_remote_command_ids_;

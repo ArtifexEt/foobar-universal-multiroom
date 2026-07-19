@@ -24,6 +24,7 @@ static constexpr UINT_PTR kPairCommand = 32003;
 static constexpr UINT_PTR kPairPinLabelId = 32004;
 static constexpr UINT_PTR kVolumeLabelBase = 33000;
 static constexpr UINT_PTR kRefreshTimer = 34000;
+static constexpr UINT_PTR kToolbarRefreshTimer = 34001;
 static constexpr int kPopupWidth = 408;
 static constexpr int kPopupPadding = 22;
 static constexpr int kHeaderHeight = 92;
@@ -259,12 +260,10 @@ private:
         return 0;
     }
 
-    BOOL on_erase_background(CDCHandle dc) {
-        CRect rc;
-        WIN32_OP_D(GetClientRect(&rc));
-        CBrush brush;
-        WIN32_OP_D(brush.CreateSolidBrush(background_color()) != nullptr);
-        WIN32_OP_D(dc.FillRect(&rc, brush));
+    BOOL on_erase_background(CDCHandle) {
+        // WM_PAINT renders the whole popup background. Suppressing the separate
+        // erase pass avoids visible blank patches while child controls are
+        // rebuilt during scrolling and volume updates.
         return TRUE;
     }
 
@@ -273,13 +272,14 @@ private:
         CRect rc;
         WIN32_OP_D(GetClientRect(&rc));
 
+        CBrush background;
+        WIN32_OP_D(background.CreateSolidBrush(background_color()) != nullptr);
+        WIN32_OP_D(dc.FillRect(&rc, background));
         dc.SetBkMode(TRANSPARENT);
         dc.SetTextColor(text_color());
         SelectObjectScope font_scope(dc, popup_font());
 
-        draw_airplay_audio_glyph(dc.m_hDC, CPoint(rc.CenterPoint().x, 25), text_color(), 10);
-
-        CRect title(kPopupPadding, 42, rc.right - kPopupPadding, 76);
+        CRect title(kPopupPadding, 0, rc.right - kPopupPadding, kHeaderHeight);
         SelectObjectScope title_scope(dc, title_font_.m_hFont != nullptr ? title_font_.m_hFont : popup_font());
         WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &title, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
 
@@ -480,7 +480,7 @@ private:
             outputs_signature_ = outputs_signature(outputs_);
             rebuild_controls();
             resize_to_content();
-            Invalidate();
+            redraw_all();
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
             SetTimer(kRefreshTimer, 250);
             return 0;
@@ -496,7 +496,7 @@ private:
             MultiroomComponentState::instance().toggle_output(outputs_[index].id);
             outputs_ = MultiroomComponentState::instance().outputs();
             sync_control_values();
-            Invalidate();
+            redraw_all();
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
             SetTimer(kRefreshTimer, 250);
             return 0;
@@ -522,7 +522,7 @@ private:
             outputs_signature_ = signature;
             rebuild_controls();
             resize_to_content();
-            Invalidate();
+            redraw_all();
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
         }
 
@@ -715,6 +715,13 @@ private:
         sync_control_values();
     }
 
+    void redraw_all() {
+        RedrawWindow(
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+    }
+
     std::string pair_target_id() const {
         std::string fallback;
         size_t fallback_count = 0;
@@ -752,7 +759,7 @@ private:
 
         MultiroomComponentState::instance().pair_output(target_id, pin);
         status_ = MultiroomComponentState::instance().status_text();
-        Invalidate();
+        redraw_all();
         if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
         SetTimer(kRefreshTimer, 250);
     }
@@ -881,7 +888,7 @@ private:
 
         first_visible_row_ = clamped;
         rebuild_controls();
-        Invalidate();
+        redraw_all();
     }
 
     int popup_height() const {
@@ -1008,6 +1015,8 @@ public:
 
     void initialize_window(HWND parent) {
         WIN32_OP(Create(parent, nullptr, nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN) != nullptr);
+        last_destination_label_ = MultiroomComponentState::instance().playback_destination_label();
+        SetTimer(kToolbarRefreshTimer, 250);
     }
 
     HWND get_wnd() override {
@@ -1027,11 +1036,11 @@ public:
     }
 
     static GUID g_get_subclass() {
-        return ui_element_subclass_utility;
+        return ui_element_subclass_playback_information;
     }
 
     static void g_get_name(pfc::string_base& out) {
-        out = "AirPlay Speaker Selector Toolbar";
+        out = "AirPlay Output";
     }
 
     static ui_element_config::ptr g_get_default_configuration() {
@@ -1039,12 +1048,12 @@ public:
     }
 
     static const char* g_get_description() {
-        return "Compact AirPlay speaker picker intended for placement next to the seekbar or playback controls.";
+        return "Shows the active AirPlay destination and opens the speaker picker; place it in the toolbar row next to playback controls, seekbar, or volume.";
     }
 
     ui_element_min_max_info get_min_max_info() override {
         ui_element_min_max_info info;
-        info.m_min_width = 36;
+        info.m_min_width = 110;
         info.m_min_height = kToolbarMinHeight;
         info.m_max_width = 260;
         info.m_max_height = kToolbarMaxHeight;
@@ -1063,6 +1072,8 @@ public:
         MESSAGE_HANDLER(WM_LBUTTONDOWN, on_left_button_down)
         MESSAGE_HANDLER(WM_LBUTTONUP, on_left_button_up)
         MESSAGE_HANDLER(WM_KEYDOWN, on_key_down)
+        MESSAGE_HANDLER(WM_TIMER, on_timer)
+        MESSAGE_HANDLER(WM_DESTROY, on_destroy)
         MESSAGE_HANDLER(WM_SETFOCUS, on_focus_changed)
         MESSAGE_HANDLER(WM_KILLFOCUS, on_focus_changed)
     END_MSG_MAP()
@@ -1088,9 +1099,10 @@ private:
         const COLORREF background = m_callback->query_std_color(ui_color_background);
         const COLORREF text = m_callback->query_std_color(ui_color_text);
         const COLORREF border = blend_color(background, text, 35);
-        const auto label = MultiroomComponentState::instance().selected_label();
-        const bool has_selection = label != L"No speakers";
-        const COLORREF glyph = has_selection ? airplay_accent(background) : text;
+        const auto label = MultiroomComponentState::instance().playback_destination_label();
+        last_destination_label_ = label;
+        const bool is_idle = label == L"AirPlay - idle";
+        const COLORREF glyph = is_idle ? text : airplay_accent(background);
 
         CBrush background_brush;
         WIN32_OP_D(background_brush.CreateSolidBrush(background) != nullptr);
@@ -1116,8 +1128,7 @@ private:
             draw_airplay_audio_glyph(dc.m_hDC, CPoint(button.left + 18, button.CenterPoint().y - 3), glyph, 8);
             CRect text_rect = button;
             text_rect.DeflateRect(35, 1, 22, 1);
-            const auto display = has_selection ? label : std::wstring(L"AirPlay");
-            WIN32_OP_D(dc.DrawTextW(display.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+            WIN32_OP_D(dc.DrawTextW(label.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
 
             CRect arrow_rect = button;
             arrow_rect.left = arrow_rect.right - 18;
@@ -1154,12 +1165,28 @@ private:
         return 0;
     }
 
+    LRESULT on_timer(UINT, WPARAM wp, LPARAM, BOOL&) {
+        if (wp != kToolbarRefreshTimer) return 0;
+        const auto label = MultiroomComponentState::instance().playback_destination_label();
+        if (label != last_destination_label_) {
+            last_destination_label_ = label;
+            Invalidate();
+        }
+        return 0;
+    }
+
+    LRESULT on_destroy(UINT, WPARAM, LPARAM, BOOL&) {
+        KillTimer(kToolbarRefreshTimer);
+        return 0;
+    }
+
     void open_picker() {
         auto* popup = new SpeakerPickerPopup(m_hWnd, m_callback);
         popup->open_below(m_hWnd);
     }
 
     ui_element_config::ptr config_;
+    std::wstring last_destination_label_;
 };
 
 static service_factory_single_t<ui_element_impl<SpeakerSelectorElement>> g_speaker_selector_factory;

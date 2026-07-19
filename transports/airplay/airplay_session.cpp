@@ -60,6 +60,9 @@ void AirPlaySessionManager::prepare_outputs(const std::vector<OutputDevice>& out
     std::lock_guard lock(mutex_);
 
     for (const auto& output : outputs) {
+        if (cancel_open_requested_.load()) {
+            throw std::runtime_error("AirPlay session setup cancelled.");
+        }
         if (!output.selected) {
             continue;
         }
@@ -83,6 +86,9 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
     std::vector<std::string> errors;
 
     for (const auto& output : outputs) {
+        if (cancel_open_requested_.load()) {
+            throw std::runtime_error("AirPlay session setup cancelled.");
+        }
         if (!output.selected) {
             continue;
         }
@@ -249,6 +255,16 @@ void AirPlaySessionManager::flush() {
         }
         session.queued_packets.clear();
     }
+}
+
+void AirPlaySessionManager::cancel_pending_open() {
+    cancel_open_requested_.store(true);
+    control_client_->cancel_pending_open();
+}
+
+void AirPlaySessionManager::reset_pending_open_cancel() {
+    cancel_open_requested_.store(false);
+    control_client_->reset_pending_open_cancel();
 }
 
 void AirPlaySessionManager::stop() {

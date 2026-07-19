@@ -31,17 +31,14 @@ std::vector<multiroom::OutputDevice> playable_outputs() {
     return outputs;
 }
 
-std::string selected_summary(const std::vector<multiroom::OutputDevice>& outputs) {
-    std::string first;
-    size_t count = 0;
-    for (const auto& output : outputs) {
-        if (!output.selected) continue;
-        if (first.empty()) first = output.name.empty() ? output.id : output.name;
-        ++count;
-    }
-    if (count == 0) return "AirPlay - no speakers";
-    if (count == 1) return first;
-    return first + " +" + std::to_string(count - 1);
+std::string narrow_wide(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int required = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 1) return {};
+    std::string result(static_cast<size_t>(required), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, result.data(), required, nullptr, nullptr);
+    result.resize(static_cast<size_t>(required - 1));
+    return result;
 }
 
 void notify_toolbar_on_main_thread() {
@@ -64,11 +61,11 @@ public:
     }
 
     void getShortName(pfc::string_base& out) override {
-        out = "AirPlay";
+        out = "AirPlay Output";
     }
 
     void getLongName(pfc::string_base& out) override {
-        out = "Universal Multiroom AirPlay speaker selector";
+        out = "Active Universal Multiroom AirPlay destination and speaker selector";
     }
 
     size_t getNumValues() override {
@@ -78,7 +75,7 @@ public:
     void getValue(size_t index, pfc::string_base& out) override {
         const auto outputs = playable_outputs();
         if (index == 0) {
-            out = selected_summary(outputs).c_str();
+            out = narrow_wide(MultiroomComponentState::instance().playback_destination_label()).c_str();
             return;
         }
         if (index == outputs.size() + 1) {
