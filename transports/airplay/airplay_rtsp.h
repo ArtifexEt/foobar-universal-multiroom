@@ -157,6 +157,7 @@ private:
     std::mutex remote_command_mutex_;
     AirPlayRemoteCommandHandler remote_command_handler_;
     std::mutex pending_connections_mutex_;
+    std::mutex connections_mutex_;
     std::atomic_bool cancel_pending_open_requested_ = false;
     std::map<std::string, std::shared_ptr<Connection>> pending_connections_;
     std::map<std::string, std::shared_ptr<Connection>> connections_;

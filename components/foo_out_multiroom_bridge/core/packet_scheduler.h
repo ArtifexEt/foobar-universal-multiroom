@@ -14,6 +14,8 @@ struct PacketScheduleRequest {
     size_t bytes = 0;
     uint32_t sample_rate = 48000;
     uint32_t minimum_lead_ms = 250;
+    uint64_t group_sync_start_rtp = 0;
+    bool group_sync_anchor_valid = false;
 };
 
 struct ScheduledPacket {
@@ -26,6 +28,8 @@ struct ScheduledPacket {
     int volume = 0;
     int offset_ms = 0;
     int measured_latency_ms = 0;
+    uint64_t group_sync_start_rtp = 0;
+    bool group_sync_anchor_valid = false;
 };
 
 class PacketScheduler {
@@ -41,4 +45,3 @@ private:
 };
 
 }  // namespace multiroom
-

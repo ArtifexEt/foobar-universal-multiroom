@@ -1,4 +1,5 @@
 #include "airplay_rtsp.h"
+#include "airplay_timing.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -50,7 +51,7 @@ constexpr uint8_t kRtpPayloadTypeAirPlay2Realtime = 0x60;
 constexpr size_t kAirPlay2FramesPerPacket = 352;
 constexpr size_t kAirPlay2Channels = 2;
 constexpr uint32_t kAirPlay2SampleRate = 44100;
-constexpr uint32_t kAirPlay2LatencyFrames = 88200;
+constexpr uint32_t kAirPlay2LatencySeconds = 2;
 constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
 
@@ -213,24 +214,6 @@ std::string colon_hex_text(const std::string& hex) {
         stream << hex[index] << hex[index + 1];
     }
     return stream.str();
-}
-
-uint64_t ntp_now() {
-    using namespace std::chrono;
-    constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
-    const auto now = system_clock::now().time_since_epoch();
-    const auto seconds = duration_cast<std::chrono::seconds>(now);
-    const auto fraction_ns = duration_cast<std::chrono::nanoseconds>(now - seconds).count();
-    const auto fraction = (static_cast<unsigned long long>(fraction_ns) << 32) / 1000000000ULL;
-    return ((static_cast<uint64_t>(seconds.count()) + kUnixToNtpSeconds) << 32) | fraction;
-}
-
-uint64_t ntp_to_rtp_timestamp(uint64_t ntp, uint32_t sample_rate) {
-    return ((ntp >> 16) * sample_rate) >> 16;
-}
-
-uint64_t rtp_timestamp_to_ntp(uint64_t rtp_timestamp, uint32_t sample_rate) {
-    return ((rtp_timestamp << 16) / sample_rate) << 16;
 }
 
 std::vector<uint8_t> hkdf_sha512(
@@ -1106,6 +1089,7 @@ public:
         const std::string& uri,
         std::map<std::string, std::string> headers = {},
         std::string body = {}) {
+        std::lock_guard lock(request_mutex_);
         headers.emplace("CSeq", std::to_string(next_cseq_++));
         headers.emplace("User-Agent", "FoobarUniversalMultiroom/0.1");
 
@@ -1161,11 +1145,12 @@ public:
         }
 
         if (!ap2_audio_key_.empty()) {
-            ensure_airplay2_sync_started(packet.presentation_timestamp);
+            ensure_airplay2_sync_started(packet);
             maybe_send_airplay2_sync(false, packet.presentation_timestamp);
 
+            const auto latency_frames = static_cast<uint64_t>(stream_sample_rate_) * kAirPlay2LatencySeconds;
             const auto rtp_timestamp =
-                static_cast<uint32_t>((packet.presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
+                static_cast<uint32_t>((packet.presentation_timestamp + latency_frames) & 0xFFFFFFFFu);
             const auto rtp_sequence = next_rtp_sequence_++;
             auto header = make_rtp_header(
                 kRtpPayloadTypeAirPlay2Realtime,
@@ -1802,7 +1787,9 @@ private:
         stream.emplace_back("controlPort", Value::integer(local_udp_ports().control.port()));
         stream.emplace_back("ct", Value::integer(audio_encoding == AirPlay2AudioEncoding::Pcm ? 1 : 2));
         stream.emplace_back("isMedia", Value::boolean(true));
-        stream.emplace_back("latencyMax", Value::integer(kAirPlay2LatencyFrames));
+        stream.emplace_back(
+            "latencyMax",
+            Value::integer(static_cast<int64_t>(stream_sample_rate_) * kAirPlay2LatencySeconds));
         stream.emplace_back("latencyMin", Value::integer(kAirPlay2MinimumLatencyFrames));
         stream.emplace_back("shk", Value::bytes(ap2_audio_key_));
         stream.emplace_back("spf", Value::integer(static_cast<int64_t>(kAirPlay2FramesPerPacket)));
@@ -1847,16 +1834,17 @@ private:
         };
     }
 
-    void ensure_airplay2_sync_started(uint64_t presentation_timestamp) {
+    void ensure_airplay2_sync_started(const ScheduledPacket& packet) {
         if (ap2_sync_started_) {
             return;
         }
+        if (!packet.group_sync_anchor_valid) {
+            throw std::logic_error("AirPlay 2 packet is missing the shared group timing anchor.");
+        }
 
-        const auto now = ntp_now();
-        const auto now_rtp = ntp_to_rtp_timestamp(now, kAirPlay2SampleRate);
-        ap2_sync_start_rtp_ = now_rtp > presentation_timestamp ? now_rtp - presentation_timestamp : 0;
+        ap2_sync_start_rtp_ = packet.group_sync_start_rtp;
         ap2_sync_started_ = true;
-        send_airplay2_sync_packet(true, presentation_timestamp);
+        send_airplay2_sync_packet(true, packet.presentation_timestamp);
     }
 
     void maybe_send_airplay2_sync(bool first, uint64_t presentation_timestamp) {
@@ -1870,16 +1858,19 @@ private:
             return;
         }
 
+        const auto latency_frames = static_cast<uint64_t>(stream_sample_rate_) * kAirPlay2LatencySeconds;
         const auto rtp_timestamp =
-            static_cast<uint32_t>((presentation_timestamp + kAirPlay2LatencyFrames) & 0xFFFFFFFFu);
-        const auto ntp = rtp_timestamp_to_ntp(ap2_sync_start_rtp_ + presentation_timestamp, kAirPlay2SampleRate);
+            static_cast<uint32_t>((presentation_timestamp + latency_frames) & 0xFFFFFFFFu);
+        const auto ntp = rtp_timestamp_to_ntp(
+            ap2_sync_start_rtp_ + presentation_timestamp,
+            stream_sample_rate_);
 
         std::vector<uint8_t> sync;
         sync.reserve(20);
         sync.push_back(first ? 0x90 : 0x80);
         sync.push_back(0xD4);
         write_u16_be(sync, 0x0007);
-        write_u32_be(sync, rtp_timestamp - kAirPlay2LatencyFrames);
+        write_u32_be(sync, rtp_timestamp - static_cast<uint32_t>(latency_frames));
         write_u32_be(sync, static_cast<uint32_t>(ntp >> 32));
         write_u32_be(sync, static_cast<uint32_t>(ntp & 0xFFFFFFFFu));
         write_u32_be(sync, rtp_timestamp);
@@ -2063,7 +2054,7 @@ private:
                 continue;
             }
 
-            const auto now = ntp_now();
+            const auto now = current_ntp_timestamp();
             std::vector<uint8_t> response;
             response.reserve(32);
             response.push_back(request[0]);
@@ -2232,6 +2223,7 @@ private:
 
     std::atomic<socket_handle_t> handle_{kInvalidSocket};
     std::atomic_bool cancelled_ = false;
+    std::mutex request_mutex_;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
     uint32_t next_rtp_timestamp_ = 0;
@@ -2392,7 +2384,10 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
                 pending_connections_.erase(pending);
             }
         }
-        connections_[output.id] = std::move(connection);
+        {
+            std::lock_guard lock(connections_mutex_);
+            connections_[output.id] = std::move(connection);
+        }
         return session;
     } catch (...) {
         std::lock_guard lock(pending_connections_mutex_);
@@ -2412,68 +2407,84 @@ void AirPlayRtspControlClient::send_audio(
     size_t bytes) {
     static_cast<void>(rtsp_session_id);
 
-    const auto it = connections_.find(output_id);
-    if (it == connections_.end()) {
-        throw std::logic_error("Cannot send AirPlay RTP audio for a closed session.");
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard lock(connections_mutex_);
+        const auto it = connections_.find(output_id);
+        if (it == connections_.end()) {
+            throw std::logic_error("Cannot send AirPlay RTP audio for a closed session.");
+        }
+        connection = it->second;
     }
-
-    it->second->send_audio_packet(packet, frames, bytes);
+    connection->send_audio_packet(packet, frames, bytes);
 }
 
 void AirPlayRtspControlClient::set_volume(
     const std::string& output_id,
     const std::string& rtsp_session_id,
     int volume) {
-    const auto it = connections_.find(output_id);
-    if (it == connections_.end()) {
-        throw std::logic_error("Cannot set AirPlay volume for a closed session.");
-    }
     if (rtsp_session_id.empty()) {
         throw std::invalid_argument("Cannot set AirPlay volume without an RTSP session id.");
     }
-
-    it->second->set_volume(rtsp_session_id, volume);
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard lock(connections_mutex_);
+        const auto it = connections_.find(output_id);
+        if (it == connections_.end()) {
+            return;
+        }
+        connection = it->second;
+    }
+    connection->set_volume(rtsp_session_id, volume);
 }
 
 void AirPlayRtspControlClient::set_metadata(
     const std::string& output_id,
     const std::string& rtsp_session_id,
     const PlaybackMetadata& metadata) {
-    const auto it = connections_.find(output_id);
-    if (it == connections_.end()) {
-        throw std::logic_error("Cannot set AirPlay metadata for a closed session.");
-    }
     if (rtsp_session_id.empty()) {
         throw std::invalid_argument("Cannot set AirPlay metadata without an RTSP session id.");
     }
-
-    it->second->set_metadata(rtsp_session_id, metadata);
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard lock(connections_mutex_);
+        const auto it = connections_.find(output_id);
+        if (it == connections_.end()) {
+            return;
+        }
+        connection = it->second;
+    }
+    connection->set_metadata(rtsp_session_id, metadata);
 }
 
 void AirPlayRtspControlClient::clear_metadata(
     const std::string& output_id,
     const std::string& rtsp_session_id) {
-    const auto it = connections_.find(output_id);
-    if (it == connections_.end()) {
-        return;
-    }
     if (rtsp_session_id.empty()) {
         throw std::invalid_argument("Cannot clear AirPlay metadata without an RTSP session id.");
     }
-
-    it->second->clear_metadata(rtsp_session_id);
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard lock(connections_mutex_);
+        const auto it = connections_.find(output_id);
+        if (it == connections_.end()) return;
+        connection = it->second;
+    }
+    connection->clear_metadata(rtsp_session_id);
 }
 
 void AirPlayRtspControlClient::flush(const std::string& output_id, const std::string& rtsp_session_id) {
-    const auto it = connections_.find(output_id);
-    if (it == connections_.end()) {
-        return;
-    }
     if (rtsp_session_id.empty()) {
         throw std::invalid_argument("Cannot flush AirPlay stream without an RTSP session id.");
     }
-
-    it->second->flush(rtsp_session_id);
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard lock(connections_mutex_);
+        const auto it = connections_.find(output_id);
+        if (it == connections_.end()) return;
+        connection = it->second;
+    }
+    connection->flush(rtsp_session_id);
 }
 
 void AirPlayRtspControlClient::reset_pending_open_cancel() {
@@ -2496,11 +2507,19 @@ void AirPlayRtspControlClient::cancel_pending_open() {
 }
 
 void AirPlayRtspControlClient::close(const std::string& output_id, const std::string& rtsp_session_id) {
-    const auto it = connections_.find(output_id);
-    if (it != connections_.end()) {
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard lock(connections_mutex_);
+        const auto it = connections_.find(output_id);
+        if (it != connections_.end()) {
+            connection = it->second;
+            connections_.erase(it);
+        }
+    }
+    if (connection) {
         if (!rtsp_session_id.empty()) {
             try {
-                static_cast<void>(it->second->request(
+                static_cast<void>(connection->request(
                     "TEARDOWN",
                     "*",
                     {
@@ -2510,7 +2529,6 @@ void AirPlayRtspControlClient::close(const std::string& output_id, const std::st
                 // The receiver may have already closed the control socket.
             }
         }
-        connections_.erase(it);
     }
 }
 

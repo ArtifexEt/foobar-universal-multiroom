@@ -1047,7 +1047,7 @@ public:
     }
 
     static void g_get_name(pfc::string_base& out) {
-        out = MULTIROOM_PRODUCT_NAME;
+        out = "Wireless Speakers";
     }
 
     static ui_element_config::ptr g_get_default_configuration() {

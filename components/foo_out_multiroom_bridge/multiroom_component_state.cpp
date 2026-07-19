@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
+#include "core/volume_control.h"
 #include "speaker_toolbar.h"
 
 #include <algorithm>
@@ -250,9 +251,7 @@ std::vector<std::string> selected_ids(const std::vector<multiroom::OutputDevice>
 }
 
 int effective_remote_volume(int speaker_volume, int master_volume_percent) {
-    const auto clamped_speaker = std::clamp(speaker_volume, 0, 100);
-    const auto clamped_master = std::clamp(master_volume_percent, 0, 100);
-    return std::clamp((clamped_speaker * clamped_master + 50) / 100, 0, 100);
+    return multiroom::effective_output_volume_percent(master_volume_percent, speaker_volume);
 }
 
 void preserve_user_output_state(
@@ -695,46 +694,51 @@ void MultiroomComponentState::control_update_worker() {
         bool control_ok = false;
 
         try {
-            ensure_discovery_started();
-            std::lock_guard transport_lock(transport_mutex_);
-            // Stop may have completed after the snapshot was taken while this
-            // worker waited for the transport. Never reopen a receiver for a
-            // stream which foobar has already closed.
-            should_connect = should_connect && playback_open_.load();
-            if (full_update || metadata_update_requested) {
-                if (metadata_active) {
-                    transport_.set_playback_metadata(metadata_snapshot);
-                } else {
-                    transport_.clear_playback_metadata();
-                }
-            }
-            if (full_update) {
-                const auto selected = selected_ids(outputs_snapshot);
-                transport_.set_enabled_outputs(selected);
-                for (const auto& output : outputs_snapshot) {
-                    transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
-                }
-                const auto previous_outputs = outputs_snapshot;
-                if (should_connect) {
-                    if (!playback_engine_) {
-                        playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
-                    }
-                    if (!playback_engine_->stream_open()) {
-                        playback_engine_->open_stream(playback_format_snapshot);
-                    }
-                    transport_.connect_selected_outputs();
-                }
-                outputs_snapshot = transport_.list_outputs();
-                preserve_user_output_state(outputs_snapshot, previous_outputs);
-            } else {
+            if (!full_update && !metadata_update_requested) {
+                // Receiver volume is a control-plane operation. It must not own
+                // the PCM transport lock while waiting for an RTSP round trip.
                 for (const auto& output : outputs_snapshot) {
                     if (volume_update_ids.find(output.id) == volume_update_ids.end()) continue;
-                    transport_.set_output_volume(
+                    transport_.set_session_volume(
                         output.id,
                         effective_remote_volume(output.volume, master_volume_snapshot));
                 }
+                control_ok = true;
+            } else {
+                ensure_discovery_started();
+                std::lock_guard transport_lock(transport_mutex_);
+                // Stop may have completed after the snapshot was taken while this
+                // worker waited for the transport. Never reopen a receiver for a
+                // stream which foobar has already closed.
+                should_connect = should_connect && playback_open_.load();
+                if (full_update || metadata_update_requested) {
+                    if (metadata_active) {
+                        transport_.set_playback_metadata(metadata_snapshot);
+                    } else {
+                        transport_.clear_playback_metadata();
+                    }
+                }
+                if (full_update) {
+                    const auto selected = selected_ids(outputs_snapshot);
+                    transport_.set_enabled_outputs(selected);
+                    for (const auto& output : outputs_snapshot) {
+                        transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
+                    }
+                    const auto previous_outputs = outputs_snapshot;
+                    if (should_connect) {
+                        if (!playback_engine_) {
+                            playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
+                        }
+                        if (!playback_engine_->stream_open()) {
+                            playback_engine_->open_stream(playback_format_snapshot);
+                        }
+                        transport_.connect_selected_outputs();
+                    }
+                    outputs_snapshot = transport_.list_outputs();
+                    preserve_user_output_state(outputs_snapshot, previous_outputs);
+                }
+                control_ok = true;
             }
-            control_ok = true;
         } catch (const std::exception& e) {
             control_error_narrow = e.what();
             control_error = widen_utf8(e.what());

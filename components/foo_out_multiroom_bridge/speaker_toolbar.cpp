@@ -65,11 +65,11 @@ public:
     }
 
     void getShortName(pfc::string_base& out) override {
-        out = MULTIROOM_PRODUCT_NAME;
+        out = "Wireless Speakers";
     }
 
     void getLongName(pfc::string_base& out) override {
-        out = "Active destination and speaker selector for " MULTIROOM_PRODUCT_NAME;
+        out = "Shows the active wireless speakers and opens the speaker selector.";
     }
 
     size_t getNumValues() override {
@@ -83,13 +83,13 @@ public:
             return;
         }
         if (index == outputs.size() + 1) {
-            out = "Open speaker picker...";
+            out = "Select Wireless Speakers...";
             return;
         }
 
         const auto output_index = index - 1;
         if (output_index >= outputs.size()) {
-            out = "Open speaker picker...";
+            out = "Select Wireless Speakers...";
             return;
         }
         const auto& output = outputs[output_index];
@@ -165,7 +165,7 @@ public:
     void get_name(t_uint32 index, pfc::string_base& out) override {
         switch (index) {
         case cmd_airplay_speakers:
-            out = MULTIROOM_PRODUCT_NAME "...";
+            out = "Select Wireless Speakers...";
             break;
         default:
             uBugCheck();
@@ -175,7 +175,7 @@ public:
     bool get_description(t_uint32 index, pfc::string_base& out) override {
         switch (index) {
         case cmd_airplay_speakers:
-            out = "Opens the speaker picker for " MULTIROOM_PRODUCT_NAME "; add this command to a toolbar for a compact speaker button.";
+            out = "Opens the wireless speaker selector. This Playback command can be added to foobar2000's Buttons toolbar.";
             return true;
         default:
             return false;

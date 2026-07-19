@@ -1,9 +1,13 @@
 #include <cstdint>
 #include <cmath>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <exception>
+#include <future>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -14,6 +18,7 @@
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
 #include "../components/foo_out_multiroom_bridge/core/output_registry.h"
+#include "../components/foo_out_multiroom_bridge/core/volume_control.h"
 #include "../transports/airplay/airplay_transport.h"
 
 struct TransportCapability {
@@ -152,7 +157,15 @@ public:
         audio_output_ids_.push_back(output_id);
     }
 
-    void set_volume(const std::string&, const std::string&, int) override {}
+    void set_volume(const std::string&, const std::string&, int) override {
+        std::unique_lock lock(volume_mutex_);
+        if (!block_next_volume_) return;
+        volume_entered_ = true;
+        volume_changed_.notify_all();
+        volume_changed_.wait(lock, [&] { return release_volume_; });
+        block_next_volume_ = false;
+        release_volume_ = false;
+    }
     void set_metadata(
         const std::string&,
         const std::string&,
@@ -166,11 +179,71 @@ public:
     size_t open_count() const { return open_count_; }
     const std::vector<std::string>& audio_output_ids() const { return audio_output_ids_; }
 
+    void block_next_volume() {
+        std::lock_guard lock(volume_mutex_);
+        block_next_volume_ = true;
+        volume_entered_ = false;
+        release_volume_ = false;
+    }
+
+    bool wait_for_blocked_volume(std::chrono::milliseconds timeout) {
+        std::unique_lock lock(volume_mutex_);
+        return volume_changed_.wait_for(lock, timeout, [&] { return volume_entered_; });
+    }
+
+    void release_blocked_volume() {
+        std::lock_guard lock(volume_mutex_);
+        release_volume_ = true;
+        volume_changed_.notify_all();
+    }
+
 private:
     std::set<std::string> failing_outputs_;
     size_t open_count_ = 0;
     std::vector<std::string> audio_output_ids_;
+    std::mutex volume_mutex_;
+    std::condition_variable volume_changed_;
+    bool block_next_volume_ = false;
+    bool volume_entered_ = false;
+    bool release_volume_ = false;
 };
+
+bool exercise_volume_does_not_block_audio() {
+    using namespace std::chrono_literals;
+
+    auto control_client = std::make_shared<SelectiveFailingControlClient>(std::set<std::string>{});
+    multiroom::airplay::AirPlaySessionManager sessions(control_client);
+    auto output = make_airplay_loopback_output("living-room", "Living Room", 7200);
+    output.selected = true;
+    sessions.prepare_outputs({output});
+    sessions.open_for_outputs({output}, {44100, 2, 16});
+
+    control_client->block_next_volume();
+    auto volume_update = std::async(std::launch::async, [&] {
+        sessions.set_volume(output.id, 25);
+    });
+    bool ok = expect(
+        control_client->wait_for_blocked_volume(1s),
+        "test volume request should enter the simulated RTSP wait");
+
+    const std::vector<int16_t> silence(704);
+    multiroom::ScheduledPacket packet;
+    packet.output_id = output.id;
+    packet.bytes = silence.size() * sizeof(int16_t);
+    packet.group_sync_anchor_valid = true;
+    packet.group_sync_start_rtp = 123456;
+    auto audio_write = std::async(std::launch::async, [&] {
+        sessions.enqueue(packet, silence.data(), packet.bytes);
+    });
+    ok &= expect(
+        audio_write.wait_for(250ms) == std::future_status::ready,
+        "an in-flight receiver volume request must not block PCM packet delivery");
+
+    control_client->release_blocked_volume();
+    volume_update.get();
+    audio_write.get();
+    return ok;
+}
 
 bool exercise_airplay_remote_commands() {
     using multiroom::airplay::AirPlayRemoteCommand;
@@ -533,6 +606,12 @@ int main() {
         ok &= expect(engine.current_frame() == 240, "480 stereo int16 samples should advance 240 frames");
         ok &= expect(outputs.size() == 2, "two outputs should be discovered");
         ok &= expect(packets.size() == 2, "one packet should be queued for each selected output");
+        ok &= expect(
+            packets.size() == 2 &&
+            packets[0].group_sync_anchor_valid &&
+            packets[1].group_sync_anchor_valid &&
+            packets[0].group_sync_start_rtp == packets[1].group_sync_start_rtp,
+            "all selected receivers should use one shared group RTP/NTP timing anchor");
         ok &= expect(control_client->audio_packet_count() == 2, "one RTP audio packet should be sent for each selected output");
         ok &= expect(control_client->volume_set_count() == 3, "initial and updated AirPlay session volumes should be sent over RTSP");
         ok &= expect(control_client->metadata_set_count() == 2,
@@ -555,6 +634,11 @@ int main() {
                      "metadata progress should not underflow before the first RTP packet");
         ok &= expect(multiroom::airplay::airplay_progress_display_start(20000) == 4640,
                      "metadata progress should retain its receiver display lead after startup");
+        ok &= expect(
+            multiroom::effective_output_volume_percent(100, 100) == 100 &&
+            multiroom::effective_output_volume_percent(50, 80) == 40 &&
+            multiroom::effective_output_volume_percent(0, 100) == 0,
+            "receiver attenuation should equal master volume multiplied by speaker volume");
         ok &= expect(std::abs(multiroom::airplay::airplay_volume_db(0) - (-144.0)) < 0.0001 &&
                      std::abs(multiroom::airplay::airplay_volume_db(50) - (-15.0)) < 0.0001 &&
                      std::abs(multiroom::airplay::airplay_volume_db(100)) < 0.0001,
@@ -619,6 +703,7 @@ int main() {
         ok &= exercise_failed_reselection_does_not_drop_pcm();
         ok &= exercise_output_registry_retain();
         ok &= exercise_airplay_remote_commands();
+        ok &= exercise_volume_does_not_block_audio();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {
