@@ -1000,6 +1000,16 @@ void MultiroomComponentState::clear_playback_metadata() {
 void MultiroomComponentState::prepare_playback_open() {
     playback_open_cancel_requested_.store(false);
     transport_.reset_pending_open_cancel();
+    {
+        std::lock_guard lock(mutex_);
+        // Foobar returns from output::open() before the render thread begins
+        // the network handshake. Publish Connecting here so UI discovery
+        // cannot enter that asynchronous handoff window.
+        playback_connecting_ = true;
+        active_output_names_.clear();
+        last_error_.clear();
+    }
+    notify_multiroom_speaker_toolbar_changed();
 }
 
 void MultiroomComponentState::cancel_pending_playback_open() {
@@ -1012,13 +1022,6 @@ void MultiroomComponentState::cancel_pending_playback_open() {
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
     try {
         validate_playback_format(format);
-        {
-            std::lock_guard lock(mutex_);
-            playback_connecting_ = true;
-            active_output_names_.clear();
-            last_error_.clear();
-        }
-        notify_multiroom_speaker_toolbar_changed();
         ensure_discovery_started();
         refresh_outputs_for_playback();
         if (playback_open_cancel_requested_.load()) {
