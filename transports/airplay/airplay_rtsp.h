@@ -217,7 +217,12 @@ private:
 std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(std::shared_ptr<AirPlayPairingStore> pairing_store = {});
 std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client();
 
+double airplay_volume_db(int volume);
 std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata);
+std::string make_airplay_progress_parameter_body(
+    const PlaybackMetadata& metadata,
+    uint32_t sample_rate,
+    uint32_t current_timestamp);
 std::string make_airplay_remote_supported_commands_body();
 bool airplay_remote_command_advertisement_accepted(int status_code);
 uint32_t airplay_progress_display_start(uint32_t track_start);

@@ -704,14 +704,6 @@ std::string make_stream_uri(const OutputDevice& output) {
     return "rtsp://" + output.endpoint_host + "/" + output.id;
 }
 
-double airplay_volume_db(int volume) {
-    const int clamped = std::clamp(volume, 0, 100);
-    if (clamped == 0) {
-        return -144.0;
-    }
-    return std::max(-144.0, 20.0 * std::log10(static_cast<double>(clamped) / 100.0));
-}
-
 std::string make_volume_parameter_body(int volume) {
     std::ostringstream body;
     body << std::fixed << std::setprecision(6)
@@ -862,6 +854,19 @@ std::string header_value_from_message(const std::string& message, const std::str
 
 }  // namespace
 
+double airplay_volume_db(int volume) {
+    const int clamped = std::clamp(volume, 0, 100);
+    if (clamped == 0) {
+        return -144.0;
+    }
+
+    // RAOP/AirPlay volume is not an amplitude percentage. Receivers map the
+    // visible 1..100 range linearly onto -30..0 dBFS, with -144 as mute.
+    // Using 20*log10(percent) makes 50% become -6 dB, which receivers display
+    // near 80%, so their UI disagrees with the foobar speaker slider.
+    return -30.0 + (0.3 * static_cast<double>(clamped));
+}
+
 std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
     std::vector<uint8_t> item;
     item.reserve(256 + metadata.title.size() + metadata.artist.size() + metadata.album.size());
@@ -891,6 +896,21 @@ std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
     append_dmap_header(body, "mlit", static_cast<uint32_t>(item.size()));
     body.insert(body.end(), item.begin(), item.end());
     return std::string(reinterpret_cast<const char*>(body.data()), body.size());
+}
+
+std::string make_airplay_progress_parameter_body(
+    const PlaybackMetadata& metadata,
+    uint32_t sample_rate,
+    uint32_t current_timestamp) {
+    const uint64_t position_frames = metadata.position_ms * sample_rate / 1000;
+    const uint64_t duration_frames = metadata.duration_ms * sample_rate / 1000;
+    const uint32_t start = current_timestamp - static_cast<uint32_t>(position_frames & 0xffffffffu);
+    const uint32_t end = duration_frames == 0
+        ? current_timestamp
+        : start + static_cast<uint32_t>(duration_frames & 0xffffffffu);
+    const auto display = airplay_progress_display_start(start);
+    return "progress: " + std::to_string(display) + "/" +
+        std::to_string(current_timestamp) + "/" + std::to_string(end) + "\r\n";
 }
 
 std::string make_airplay_remote_supported_commands_body() {
@@ -1195,14 +1215,10 @@ public:
         }
 
         const uint64_t position_frames = metadata.position_ms * stream_sample_rate_ / 1000;
-        const uint64_t duration_frames = metadata.duration_ms * stream_sample_rate_ / 1000;
         const uint32_t current = rtp_clock_initialized_
             ? next_rtp_timestamp_
             : static_cast<uint32_t>(position_frames & 0xffffffffu);
         const uint32_t start = current - static_cast<uint32_t>(position_frames & 0xffffffffu);
-        const uint32_t end = duration_frames == 0
-            ? current
-            : start + static_cast<uint32_t>(duration_frames & 0xffffffffu);
         const auto rtp_info = "rtptime=" + std::to_string(start);
 
         static_cast<void>(request_success(
@@ -1222,14 +1238,11 @@ public:
                     metadata.artwork.size())));
         }
 
-        const auto display = airplay_progress_display_start(start);
-        const auto progress = "progress: " + std::to_string(display) + "/" +
-            std::to_string(current) + "/" + std::to_string(end) + "\r\n";
         static_cast<void>(request_success(
             "SET_PARAMETER",
             stream_uri_,
             metadata_headers(rtsp_session_id, "text/parameters", rtp_info),
-            progress));
+            make_airplay_progress_parameter_body(metadata, stream_sample_rate_, current)));
     }
 
     void clear_metadata(const std::string& rtsp_session_id) {

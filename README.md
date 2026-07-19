@@ -62,14 +62,19 @@ without changing the foobar UI.
 - Per-speaker UI volume changes are sent to active AirPlay sessions with native
   RTSP `SET_PARAMETER` volume updates. Drag events are committed once at the
   end of the gesture and coalesced on a volume-only control path so they do not
-  repeatedly block PCM delivery or reconnect the selected group.
+  repeatedly block PCM delivery or reconnect the selected group. Speaker
+  percentages use AirPlay's native linear `-30..0 dB` scale (`0%` is the
+  `-144 dB` mute sentinel), so the effective percentage sent after applying
+  foobar's master multiplier matches the receiver's percentage scale.
 - The main foobar2000 volume is treated as a remote AirPlay master volume
   multiplier instead of digitally attenuating the PCM stream.
 - Foobar now-playing callbacks publish the current title, artist, album, album
   artist, composer, genre, year, track/disc numbers, duration, position, and
   front-cover artwork to active AirPlay sessions. New sessions receive the
-  current snapshot, while track starts and playback stop explicitly clear stale
-  receiver metadata before the next artwork is available.
+  current snapshot. Duration also falls back to foobar's dynamic length API and
+  is resent if it becomes available after playback starts, so the receiver gets
+  a complete progress end timestamp. Track starts and playback stop explicitly
+  clear stale receiver metadata before the next artwork is available.
 - AirPlay 2 receiver-side play, pause, play/pause toggle, stop, next, and
   previous commands are decoded from the encrypted event channel and dispatched
   to foobar on its main thread. Duplicate command IDs from a speaker group are

@@ -37,6 +37,14 @@ uint64_t milliseconds_from_seconds(double value) {
     return static_cast<uint64_t>(std::llround(milliseconds));
 }
 
+uint64_t query_current_playback_duration_ms() {
+    try {
+        return milliseconds_from_seconds(playback_control::get()->playback_get_length_ex());
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
 void apply_info(multiroom::PlaybackMetadata& metadata, const file_info& info, bool replace_empty) {
     const auto assign = [replace_empty](std::string& target, std::string value) {
         if (replace_empty || !value.empty()) {
@@ -79,6 +87,15 @@ class PlaybackMetadataBridge final
     : public play_callback
     , public now_playing_album_art_notify {
 public:
+    PlaybackMetadataBridge()
+        : deferred_context_(std::make_shared<DeferredContext>()) {
+        deferred_context_->owner = this;
+    }
+
+    ~PlaybackMetadataBridge() {
+        deferred_context_->owner = nullptr;
+    }
+
     static constexpr unsigned callback_flags =
         play_callback::flag_on_playback_starting |
         play_callback::flag_on_playback_new_track |
@@ -91,12 +108,16 @@ public:
 
     void on_playback_starting(play_control::t_track_command, bool) override {
         active_ = false;
+        duration_query_pending_ = false;
+        ++track_generation_;
         metadata_ = {};
         MultiroomComponentState::instance().clear_playback_metadata();
     }
 
     void on_playback_new_track(metadb_handle_ptr track) override {
         active_ = true;
+        duration_query_pending_ = false;
+        ++track_generation_;
         metadata_ = {};
 
         if (track.is_valid()) {
@@ -113,10 +134,13 @@ public:
         }
 
         MultiroomComponentState::instance().set_playback_metadata(metadata_);
+        schedule_duration_query();
     }
 
     void on_playback_stop(play_control::t_stop_reason) override {
         active_ = false;
+        duration_query_pending_ = false;
+        ++track_generation_;
         metadata_ = {};
         MultiroomComponentState::instance().clear_playback_metadata();
     }
@@ -140,14 +164,21 @@ public:
         if (track->get_browse_info_merged(info)) {
             const auto artwork = metadata_.artwork;
             const auto artwork_mime = metadata_.artwork_mime;
+            const auto duration_ms = metadata_.duration_ms;
             const auto position_ms = metadata_.position_ms;
             const auto paused = metadata_.paused;
             apply_info(metadata_, info, true);
+            if (metadata_.duration_ms == 0) {
+                metadata_.duration_ms = duration_ms;
+            }
             metadata_.artwork = artwork;
             metadata_.artwork_mime = artwork_mime;
             metadata_.position_ms = position_ms;
             metadata_.paused = paused;
             MultiroomComponentState::instance().set_playback_metadata(metadata_);
+            if (metadata_.duration_ms == 0) {
+                schedule_duration_query();
+            }
         }
     }
 
@@ -157,12 +188,18 @@ public:
         if (!active_) return;
         apply_info(metadata_, info, false);
         MultiroomComponentState::instance().set_playback_metadata(metadata_);
+        if (metadata_.duration_ms == 0) {
+            schedule_duration_query();
+        }
     }
 
     void on_playback_time(double time) override {
         if (!active_) return;
         metadata_.position_ms = milliseconds_from_seconds(time);
         MultiroomComponentState::instance().update_playback_position(metadata_.position_ms);
+        if (metadata_.duration_ms == 0) {
+            schedule_duration_query();
+        }
     }
 
     void on_volume_change(float) override {}
@@ -197,8 +234,43 @@ public:
     }
 
 private:
+    struct DeferredContext {
+        PlaybackMetadataBridge* owner = nullptr;
+    };
+
+    void schedule_duration_query() {
+        if (!active_ || duration_query_pending_) return;
+
+        duration_query_pending_ = true;
+        const auto weak_context = std::weak_ptr<DeferredContext>(deferred_context_);
+        const auto generation = track_generation_;
+        fb2k::inMainThread([weak_context, generation] {
+            const auto context = weak_context.lock();
+            if (context && context->owner != nullptr) {
+                context->owner->apply_deferred_duration(generation);
+            }
+        });
+    }
+
+    void apply_deferred_duration(uint64_t generation) {
+        if (!active_ || generation != track_generation_) return;
+
+        duration_query_pending_ = false;
+        const auto playback_duration = query_current_playback_duration_ms();
+        if (playback_duration == 0 || playback_duration == metadata_.duration_ms) return;
+
+        // The deferred main-thread callback runs outside play_callback dispatch,
+        // as required by playback_control. Send a complete snapshot once the
+        // decoder exposes a finite duration so AirPlay receives a real end time.
+        metadata_.duration_ms = playback_duration;
+        MultiroomComponentState::instance().set_playback_metadata(metadata_);
+    }
+
+    std::shared_ptr<DeferredContext> deferred_context_;
     multiroom::PlaybackMetadata metadata_;
+    uint64_t track_generation_ = 0;
     bool active_ = false;
+    bool duration_query_pending_ = false;
 };
 
 class PlaybackMetadataLifecycle : public initquit {
