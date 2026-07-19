@@ -75,6 +75,9 @@ bool exercise_speaker_groups() {
     const auto resolved = multiroom::resolve_speaker_group_output_ids(group, outputs);
     ok &= expect(resolved == std::vector<std::string>({"living-room", "kitchen"}),
                  "speaker groups should resolve persisted discovery aliases to current output IDs");
+    ok &= expect(multiroom::speaker_group_contains_persisted_output(group, "living-room", outputs) &&
+                 !multiroom::speaker_group_contains_persisted_output(group, "old-offline-selection", outputs),
+                 "group activation should select aliased members and clear unrelated persisted offline outputs");
     ok &= expect(multiroom::speaker_group_matches_selection(group, outputs),
                  "speaker group should match the exact selected output set");
     outputs.back().selected = true;

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,16 @@ std::wstring speaker_state_text(const multiroom::OutputDevice& output) {
     if (output.supports_legacy_l16) return L"Legacy";
     if (output.requires_auth) return L"Auth required";
     return L"Unsupported";
+}
+
+std::string group_member_outputs_signature(const std::vector<multiroom::OutputDevice>& outputs) {
+    std::ostringstream result;
+    for (const auto& output : outputs) {
+        result << output.id << '|' << output.name << '|' << output.supports_airplay2 << '|';
+        for (const auto& alias : output.aliases) result << alias << ',';
+        result << ';';
+    }
+    return result.str();
 }
 
 std::wstring text_from_item(HWND wnd, int id) {
@@ -383,6 +394,7 @@ private:
         ListView_DeleteAllItems(list);
         group_member_output_ids_.clear();
         const auto outputs = MultiroomComponentState::instance().outputs();
+        group_member_outputs_signature_ = group_member_outputs_signature(outputs);
         std::vector<std::string> represented_group_ids;
 
         for (const auto& output : outputs) {
@@ -410,6 +422,29 @@ private:
                 add_group_member_row(id, widen_utf8(id), L"Unavailable", true);
             }
         }
+    }
+
+    std::vector<std::string> checked_group_member_ids() const {
+        std::vector<std::string> result;
+        HWND list = find_dlg_item(wnd_, idGroupMemberList);
+        if (list == nullptr) return result;
+        for (int index = 0; index < static_cast<int>(group_member_output_ids_.size()); ++index) {
+            if (ListView_GetCheckState(list, index) != FALSE) {
+                result.push_back(group_member_output_ids_[static_cast<size_t>(index)]);
+            }
+        }
+        return result;
+    }
+
+    void refresh_group_members_if_outputs_changed() {
+        const auto outputs = MultiroomComponentState::instance().outputs();
+        const auto signature = group_member_outputs_signature(outputs);
+        if (signature == group_member_outputs_signature_) return;
+
+        multiroom::SpeakerGroup edited;
+        edited.id = editing_group_id_;
+        edited.output_ids = checked_group_member_ids();
+        populate_group_members(edited.output_ids.empty() ? nullptr : &edited);
     }
 
     void add_group_member_row(
@@ -723,6 +758,7 @@ private:
         if (wp != kStatusRefreshTimer) return FALSE;
 
         update_status_page();
+        refresh_group_members_if_outputs_changed();
         if (!MultiroomComponentState::instance().refresh_in_progress() &&
             !MultiroomComponentState::instance().pairing_in_progress()) {
             ::KillTimer(wnd_, kStatusRefreshTimer);
@@ -848,6 +884,7 @@ private:
     std::vector<multiroom::SpeakerGroup> speaker_groups_;
     std::vector<std::string> group_member_output_ids_;
     std::string editing_group_id_;
+    std::string group_member_outputs_signature_;
     int selected_page_ = 0;
     bool updating_speaker_list_ = false;
     HBRUSH background_brush_ = CreateSolidBrush(kDarkBackground);

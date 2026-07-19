@@ -138,6 +138,22 @@ std::vector<std::string> resolve_speaker_group_output_ids(
     return result;
 }
 
+bool speaker_group_contains_persisted_output(
+    const SpeakerGroup& group,
+    const std::string& persisted_output_id,
+    const std::vector<OutputDevice>& known_outputs) {
+    if (std::find(group.output_ids.begin(), group.output_ids.end(), persisted_output_id) != group.output_ids.end()) {
+        return true;
+    }
+    const auto output = std::find_if(known_outputs.begin(), known_outputs.end(), [&](const auto& candidate) {
+        return output_matches_id(candidate, persisted_output_id);
+    });
+    if (output == known_outputs.end()) return false;
+    return std::any_of(group.output_ids.begin(), group.output_ids.end(), [&](const auto& group_id) {
+        return output_matches_id(*output, group_id);
+    });
+}
+
 bool speaker_group_matches_selection(
     const SpeakerGroup& group,
     const std::vector<OutputDevice>& outputs) {

@@ -21,6 +21,11 @@ std::vector<std::string> resolve_speaker_group_output_ids(
     const SpeakerGroup& group,
     const std::vector<OutputDevice>& outputs);
 
+bool speaker_group_contains_persisted_output(
+    const SpeakerGroup& group,
+    const std::string& persisted_output_id,
+    const std::vector<OutputDevice>& known_outputs);
+
 bool speaker_group_matches_selection(
     const SpeakerGroup& group,
     const std::vector<OutputDevice>& outputs);

@@ -208,6 +208,33 @@ bool has_stored_selected_output() {
     });
 }
 
+void replace_stored_output_selection(
+    const multiroom::SpeakerGroup& group,
+    const std::vector<multiroom::OutputDevice>& known_outputs) {
+    std::lock_guard lock(cfg_airplay_output_state_mutex);
+    auto states = parse_output_state_text(cfg_airplay_output_state.get().c_str());
+    for (auto& state : states) {
+        state.selected = multiroom::speaker_group_contains_persisted_output(
+            group, state.output_id, known_outputs);
+    }
+    for (const auto& group_id : group.output_ids) {
+        const bool represented = std::any_of(states.begin(), states.end(), [&](const auto& state) {
+            return multiroom::speaker_group_contains_persisted_output(
+                group, state.output_id, known_outputs) &&
+                (state.output_id == group_id || std::any_of(known_outputs.begin(), known_outputs.end(), [&](const auto& output) {
+                    const bool state_matches = output.id == state.output_id ||
+                        std::find(output.aliases.begin(), output.aliases.end(), state.output_id) != output.aliases.end();
+                    const bool group_matches = output.id == group_id ||
+                        std::find(output.aliases.begin(), output.aliases.end(), group_id) != output.aliases.end();
+                    return state_matches && group_matches;
+                }));
+        });
+        if (!represented) states.push_back({group_id, true, 50, true});
+    }
+    const auto serialized = format_output_state_text(states);
+    cfg_airplay_output_state = serialized.c_str();
+}
+
 std::vector<multiroom::SpeakerGroup> load_speaker_groups() {
     std::lock_guard lock(cfg_speaker_groups_mutex);
     return multiroom::deserialize_speaker_groups(cfg_speaker_groups.get().c_str());
@@ -1023,6 +1050,7 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
         if (group == groups.end()) throw std::invalid_argument("Speaker group no longer exists.");
 
         std::vector<multiroom::OutputDevice> changed_outputs;
+        std::vector<multiroom::OutputDevice> known_outputs;
         {
             std::lock_guard lock(mutex_);
             auto available_outputs = cached_outputs_;
@@ -1042,9 +1070,11 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
                     changed_outputs.push_back(output);
                 }
             }
+            known_outputs = cached_outputs_;
             last_error_.clear();
         }
 
+        replace_stored_output_selection(*group, known_outputs);
         for (const auto& output : changed_outputs) update_stored_output_state(output);
         notify_multiroom_speaker_toolbar_changed();
         schedule_control_update();
