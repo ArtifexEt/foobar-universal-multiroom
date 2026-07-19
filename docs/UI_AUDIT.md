@@ -64,15 +64,16 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
 2. Add named group presets and recent groups.
 3. Surface per-speaker session phases and actionable inline errors instead of
    relying mainly on the shared status text and console.
-4. Add artwork/now-playing context only if it remains compact; speaker routing
-   must stay the primary hierarchy.
-5. Map encrypted AirPlay event-channel feedback so device-side volume and
+4. Map encrypted AirPlay event-channel feedback so device-side volume and
    remote playback actions update foobar and every visible UI surface.
-6. Add accessibility metadata for the custom-drawn rows and sliders beyond the
+5. Add accessibility metadata for the custom-drawn rows and sliders beyond the
    existing keyboard/focus support.
-7. Validate final spacing, hit targets, scaling, and color contrast on 100%,
+6. Validate final spacing, hit targets, scaling, and color contrast on 100%,
    125%, 150%, and 200% Windows display scaling with the packaged PR artifact.
-8. Add first-class receiver-type metadata to discovery if product-specific
+7. Add first-class receiver-type metadata to discovery if product-specific
    icons (HomePod, Apple TV, Mac, television) are desired. The current picker
    intentionally uses one honest generic speaker glyph instead of guessing a
    device class from its display name.
+8. Add optional compact now-playing context to the local speaker popup only if
+   it does not displace routing controls. Protocol delivery of current metadata
+   and artwork to receivers is implemented independently of this UI choice.

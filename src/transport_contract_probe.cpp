@@ -35,6 +35,8 @@ void print_capabilities() {
         {"set_enabled_outputs", true},
         {"set_output_volume", true},
         {"set_output_offset_ms", true},
+        {"now_playing_metadata", true},
+        {"now_playing_artwork", true},
         {"accept_pcm_stream", true},
         {"transport_clock_sync", true},
         {"group_presets", false},
@@ -123,6 +125,11 @@ public:
     }
 
     void set_volume(const std::string&, const std::string&, int) override {}
+    void set_metadata(
+        const std::string&,
+        const std::string&,
+        const multiroom::PlaybackMetadata&) override {}
+    void clear_metadata(const std::string&, const std::string&) override {}
     void flush(const std::string&, const std::string&) override {}
     void close(const std::string&, const std::string&) override {}
 
@@ -361,6 +368,23 @@ int main() {
         engine.select_outputs({"living-room", "kitchen"});
         engine.set_output_volume("living-room", 55);
         engine.set_output_offset_ms("kitchen", 12);
+
+        multiroom::PlaybackMetadata metadata;
+        metadata.title = "Current Track";
+        metadata.artist = "Current Artist";
+        metadata.album = "Current Album";
+        metadata.album_artist = "Album Artist";
+        metadata.composer = "Composer";
+        metadata.genre = "Genre";
+        metadata.track_number = 3;
+        metadata.disc_number = 1;
+        metadata.year = 2026;
+        metadata.duration_ms = 245000;
+        metadata.position_ms = 15000;
+        metadata.artwork_mime = "image/png";
+        metadata.artwork = {0x89, 0x50, 0x4e, 0x47};
+        transport.set_playback_metadata(metadata);
+
         engine.open_stream({48000, 2, 16});
         transport.connect_selected_outputs();
         engine.set_output_volume("kitchen", 40);
@@ -380,7 +404,26 @@ int main() {
         ok &= expect(packets.size() == 2, "one packet should be queued for each selected output");
         ok &= expect(control_client->audio_packet_count() == 2, "one RTP audio packet should be sent for each selected output");
         ok &= expect(control_client->volume_set_count() == 3, "initial and updated AirPlay session volumes should be sent over RTSP");
+        ok &= expect(control_client->metadata_set_count() == 2,
+                     "current metadata should be replayed to every newly opened AirPlay session");
+        ok &= expect(control_client->last_metadata().title == "Current Track" &&
+                     control_client->last_metadata().artwork == metadata.artwork,
+                     "AirPlay sessions should receive the current title and artwork snapshot");
         ok &= expect(sessions.size() == 2, "two AirPlay sessions should exist");
+
+        const auto dmap = multiroom::airplay::make_airplay_dmap_metadata_body(metadata);
+        ok &= expect(dmap.size() > 8 && dmap.substr(0, 4) == "mlit",
+                     "AirPlay metadata should use a DMAP listing-item container");
+        ok &= expect(dmap.find("minm") != std::string::npos &&
+                     dmap.find("Current Track") != std::string::npos &&
+                     dmap.find("asar") != std::string::npos &&
+                     dmap.find("Current Artist") != std::string::npos &&
+                     dmap.find("asac") != std::string::npos,
+                     "DMAP metadata should contain title, artist, and artwork state tags");
+        ok &= expect(multiroom::airplay::airplay_progress_display_start(0) == 0,
+                     "metadata progress should not underflow before the first RTP packet");
+        ok &= expect(multiroom::airplay::airplay_progress_display_start(20000) == 4640,
+                     "metadata progress should retain its receiver display lead after startup");
 
         bool sessions_ready = true;
         for (const auto& session : sessions) {
@@ -426,6 +469,8 @@ int main() {
         ok &= expect(control_client->flush_count() == 2, "flush should notify each active AirPlay control session");
 
         engine.stop();
+        ok &= expect(control_client->metadata_clear_count() == 2,
+                     "stopping playback should clear stale metadata on every active AirPlay session");
         ok &= expect(!engine.stream_open(), "stop should close engine stream");
         ok &= expect(!transport.stream_open(), "stop should close transport stream");
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");

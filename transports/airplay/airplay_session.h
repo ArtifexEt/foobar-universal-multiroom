@@ -46,6 +46,8 @@ public:
     void open_for_outputs(const std::vector<OutputDevice>& outputs, const PcmFormat& format);
     void close_missing_outputs(const std::vector<OutputDevice>& outputs);
     void set_volume(const std::string& output_id, int volume);
+    void set_metadata(const PlaybackMetadata& metadata);
+    void clear_metadata();
     void enqueue(const ScheduledPacket& packet, const void* frames, size_t bytes);
     void flush();
     void stop();

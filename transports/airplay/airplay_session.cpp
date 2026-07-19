@@ -183,6 +183,41 @@ void AirPlaySessionManager::set_volume(const std::string& output_id, int volume)
         volume);
 }
 
+void AirPlaySessionManager::set_metadata(const PlaybackMetadata& metadata) {
+    std::lock_guard lock(mutex_);
+
+    for (auto& [_, session] : sessions_) {
+        if (session.phase == AirPlaySessionPhase::Ready && session.open) {
+            try {
+                control_client_->set_metadata(
+                    session.output_id,
+                    session.rtsp_session_id,
+                    metadata);
+                session.last_error.clear();
+            } catch (const std::exception& e) {
+                session.last_error = std::string("AirPlay metadata update failed: ") + e.what();
+            }
+        }
+    }
+}
+
+void AirPlaySessionManager::clear_metadata() {
+    std::lock_guard lock(mutex_);
+
+    for (auto& [_, session] : sessions_) {
+        if (session.phase == AirPlaySessionPhase::Ready && session.open) {
+            try {
+                control_client_->clear_metadata(
+                    session.output_id,
+                    session.rtsp_session_id);
+                session.last_error.clear();
+            } catch (const std::exception& e) {
+                session.last_error = std::string("AirPlay metadata clear failed: ") + e.what();
+            }
+        }
+    }
+}
+
 void AirPlaySessionManager::enqueue(const ScheduledPacket& packet, const void* frames, size_t bytes) {
     std::lock_guard lock(mutex_);
 

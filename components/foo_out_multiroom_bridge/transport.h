@@ -46,6 +46,23 @@ struct PcmFormat {
     uint32_t bits_per_sample = 16;
 };
 
+struct PlaybackMetadata {
+    std::string title;
+    std::string artist;
+    std::string album;
+    std::string album_artist;
+    std::string composer;
+    std::string genre;
+    uint32_t track_number = 0;
+    uint32_t disc_number = 0;
+    uint32_t year = 0;
+    uint64_t duration_ms = 0;
+    uint64_t position_ms = 0;
+    std::string artwork_mime;
+    std::vector<uint8_t> artwork;
+    bool paused = false;
+};
+
 class Transport {
 public:
     virtual ~Transport() = default;
@@ -57,6 +74,8 @@ public:
     virtual void set_enabled_outputs(const std::vector<std::string>& ids) = 0;
     virtual void set_output_volume(const std::string& id, int volume) = 0;
     virtual void set_output_offset_ms(const std::string& id, int offset_ms) = 0;
+    virtual void set_playback_metadata(const PlaybackMetadata& metadata) = 0;
+    virtual void clear_playback_metadata() = 0;
     virtual void open_stream(const PcmFormat& format) = 0;
     virtual void write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) = 0;
     virtual void flush() = 0;

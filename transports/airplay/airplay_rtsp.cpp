@@ -718,6 +718,48 @@ std::string make_volume_parameter_body(int volume) {
     return body.str();
 }
 
+void append_dmap_header(std::vector<uint8_t>& out, const char* tag, uint32_t length) {
+    out.insert(out.end(), tag, tag + 4);
+    write_u32_be(out, length);
+}
+
+void append_dmap_string(std::vector<uint8_t>& out, const char* tag, const std::string& value) {
+    const auto length = (std::min)(value.size(), static_cast<size_t>((std::numeric_limits<uint32_t>::max)()));
+    append_dmap_header(out, tag, static_cast<uint32_t>(length));
+    out.insert(out.end(), value.begin(), value.begin() + length);
+}
+
+void append_dmap_u8(std::vector<uint8_t>& out, const char* tag, uint8_t value) {
+    append_dmap_header(out, tag, 1);
+    out.push_back(value);
+}
+
+void append_dmap_u16(std::vector<uint8_t>& out, const char* tag, uint16_t value) {
+    append_dmap_header(out, tag, 2);
+    write_u16_be(out, value);
+}
+
+void append_dmap_u32(std::vector<uint8_t>& out, const char* tag, uint32_t value) {
+    append_dmap_header(out, tag, 4);
+    write_u32_be(out, value);
+}
+
+uint32_t metadata_item_id(const PlaybackMetadata& metadata) {
+    uint32_t hash = 2166136261u;
+    const auto add = [&hash](const std::string& value) {
+        for (const auto byte : value) {
+            hash ^= static_cast<uint8_t>(byte);
+            hash *= 16777619u;
+        }
+        hash ^= 0xffu;
+        hash *= 16777619u;
+    };
+    add(metadata.title);
+    add(metadata.artist);
+    add(metadata.album);
+    return hash == 0 ? 1 : hash;
+}
+
 std::string make_announce_sdp(const OutputDevice& output, const PcmFormat& format) {
     if (format.channels != 2 || format.bits_per_sample != 16) {
         throw std::invalid_argument("AirPlay SDP writer only supports stereo 16-bit PCM.");
@@ -818,6 +860,44 @@ std::string header_value_from_message(const std::string& message, const std::str
 }
 
 }  // namespace
+
+std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
+    std::vector<uint8_t> item;
+    item.reserve(256 + metadata.title.size() + metadata.artist.size() + metadata.album.size());
+
+    const auto item_id = metadata_item_id(metadata);
+    append_dmap_u8(item, "mikd", 2);
+    append_dmap_u8(item, "asdk", 0);
+    append_dmap_u32(item, "miid", item_id);
+    append_dmap_string(item, "minm", metadata.title);
+    append_dmap_string(item, "asal", metadata.album);
+    append_dmap_string(item, "asaa", metadata.album_artist);
+    append_dmap_string(item, "asar", metadata.artist);
+    append_dmap_string(item, "ascp", metadata.composer);
+    append_dmap_string(item, "asgn", metadata.genre);
+    append_dmap_u32(item, "astm", static_cast<uint32_t>((std::min)(metadata.duration_ms, static_cast<uint64_t>((std::numeric_limits<uint32_t>::max)()))));
+    append_dmap_u16(item, "astn", static_cast<uint16_t>((std::min)(metadata.track_number, static_cast<uint32_t>((std::numeric_limits<uint16_t>::max)()))));
+    append_dmap_u16(item, "asdn", static_cast<uint16_t>((std::min)(metadata.disc_number, static_cast<uint32_t>((std::numeric_limits<uint16_t>::max)()))));
+    append_dmap_u16(item, "asyr", static_cast<uint16_t>((std::min)(metadata.year, static_cast<uint32_t>((std::numeric_limits<uint16_t>::max)()))));
+    append_dmap_u16(item, "ased", metadata.artwork.empty() ? 0 : 1);
+    append_dmap_u16(item, "asac", metadata.artwork.empty() ? 0 : 1);
+    append_dmap_string(item, "asfm", "wav");
+    append_dmap_u16(item, "asbr", 1411);
+    append_dmap_string(item, "asdt", "WAV audio file");
+
+    std::vector<uint8_t> body;
+    body.reserve(item.size() + 8);
+    append_dmap_header(body, "mlit", static_cast<uint32_t>(item.size()));
+    body.insert(body.end(), item.begin(), item.end());
+    return std::string(reinterpret_cast<const char*>(body.data()), body.size());
+}
+
+uint32_t airplay_progress_display_start(uint32_t track_start) {
+    constexpr uint32_t kMetadataLeadFrames = 15360;
+    return track_start >= kMetadataLeadFrames
+        ? track_start - kMetadataLeadFrames
+        : 0;
+}
 
 class AirPlayRtspControlClient::Connection {
     friend class AirPlayRtspControlClient;
@@ -982,6 +1062,53 @@ public:
             make_volume_parameter_body(volume));
     }
 
+    void set_metadata(const std::string& rtsp_session_id, const PlaybackMetadata& metadata) {
+        if (stream_uri_.empty()) {
+            throw std::logic_error("Cannot set AirPlay metadata before stream URI is known.");
+        }
+
+        const uint64_t position_frames = metadata.position_ms * stream_sample_rate_ / 1000;
+        const uint64_t duration_frames = metadata.duration_ms * stream_sample_rate_ / 1000;
+        const uint32_t current = rtp_clock_initialized_
+            ? next_rtp_timestamp_
+            : static_cast<uint32_t>(position_frames & 0xffffffffu);
+        const uint32_t start = current - static_cast<uint32_t>(position_frames & 0xffffffffu);
+        const uint32_t end = duration_frames == 0
+            ? current
+            : start + static_cast<uint32_t>(duration_frames & 0xffffffffu);
+        const auto rtp_info = "rtptime=" + std::to_string(start);
+
+        static_cast<void>(request_success(
+            "SET_PARAMETER",
+            stream_uri_,
+            metadata_headers(rtsp_session_id, "application/x-dmap-tagged", rtp_info),
+            make_airplay_dmap_metadata_body(metadata)));
+
+        if (!metadata.artwork.empty() &&
+            (metadata.artwork_mime == "image/jpeg" || metadata.artwork_mime == "image/png")) {
+            static_cast<void>(request_success(
+                "SET_PARAMETER",
+                stream_uri_,
+                metadata_headers(rtsp_session_id, metadata.artwork_mime, rtp_info),
+                std::string(
+                    reinterpret_cast<const char*>(metadata.artwork.data()),
+                    metadata.artwork.size())));
+        }
+
+        const auto display = airplay_progress_display_start(start);
+        const auto progress = "progress: " + std::to_string(display) + "/" +
+            std::to_string(current) + "/" + std::to_string(end) + "\r\n";
+        static_cast<void>(request_success(
+            "SET_PARAMETER",
+            stream_uri_,
+            metadata_headers(rtsp_session_id, "text/parameters", rtp_info),
+            progress));
+    }
+
+    void clear_metadata(const std::string& rtsp_session_id) {
+        set_metadata(rtsp_session_id, PlaybackMetadata{});
+    }
+
     void flush(const std::string& rtsp_session_id) {
         if (stream_uri_.empty()) {
             throw std::logic_error("Cannot flush AirPlay stream before stream URI is known.");
@@ -1025,6 +1152,8 @@ public:
         if (format.sample_rate != 44100 || format.channels != 2 || format.bits_per_sample != 16) {
             throw std::invalid_argument("AirPlay 2 MVP currently requires 44.1 kHz stereo 16-bit PCM.");
         }
+
+        stream_sample_rate_ = format.sample_rate;
 
         ap2_audio_encoding_ = audio_encoding;
         dacp_id_ = random_hex(8);
@@ -1195,6 +1324,7 @@ private:
         next_rtp_sequence_ = 0;
         next_rtp_timestamp_ = 0;
         rtp_clock_initialized_ = false;
+        stream_sample_rate_ = kAirPlay2SampleRate;
         remote_data_port_ = 0;
         remote_control_port_ = 0;
         ap2_session_id_ = 0;
@@ -1226,6 +1356,18 @@ private:
         headers.emplace("Active-Remote", active_remote_);
         headers.emplace("Client-Instance", dacp_id_);
         return headers;
+    }
+
+    std::map<std::string, std::string> metadata_headers(
+        const std::string& rtsp_session_id,
+        const std::string& content_type,
+        const std::string& rtp_info) const {
+        std::map<std::string, std::string> headers = {
+            {"Content-Type", content_type},
+            {"RTP-Info", rtp_info},
+            {"Session", rtsp_session_id},
+        };
+        return ap2_audio_key_.empty() ? headers : ap2_headers(std::move(headers));
     }
 
     std::map<std::string, std::string> ap2_setup_headers() const {
@@ -1913,6 +2055,7 @@ private:
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
     uint32_t next_rtp_timestamp_ = 0;
+    uint32_t stream_sample_rate_ = kAirPlay2SampleRate;
     bool rtp_clock_initialized_ = false;
     uint16_t remote_data_port_ = 0;
     uint16_t remote_control_port_ = 0;
@@ -2065,6 +2208,35 @@ void AirPlayRtspControlClient::set_volume(
     it->second->set_volume(rtsp_session_id, volume);
 }
 
+void AirPlayRtspControlClient::set_metadata(
+    const std::string& output_id,
+    const std::string& rtsp_session_id,
+    const PlaybackMetadata& metadata) {
+    const auto it = connections_.find(output_id);
+    if (it == connections_.end()) {
+        throw std::logic_error("Cannot set AirPlay metadata for a closed session.");
+    }
+    if (rtsp_session_id.empty()) {
+        throw std::invalid_argument("Cannot set AirPlay metadata without an RTSP session id.");
+    }
+
+    it->second->set_metadata(rtsp_session_id, metadata);
+}
+
+void AirPlayRtspControlClient::clear_metadata(
+    const std::string& output_id,
+    const std::string& rtsp_session_id) {
+    const auto it = connections_.find(output_id);
+    if (it == connections_.end()) {
+        return;
+    }
+    if (rtsp_session_id.empty()) {
+        throw std::invalid_argument("Cannot clear AirPlay metadata without an RTSP session id.");
+    }
+
+    it->second->clear_metadata(rtsp_session_id);
+}
+
 void AirPlayRtspControlClient::flush(const std::string& output_id, const std::string& rtsp_session_id) {
     const auto it = connections_.find(output_id);
     if (it == connections_.end()) {
@@ -2154,6 +2326,25 @@ void AirPlayLoopbackControlClient::set_volume(
     ++volume_set_count_;
 }
 
+void AirPlayLoopbackControlClient::set_metadata(
+    const std::string& output_id,
+    const std::string& rtsp_session_id,
+    const PlaybackMetadata& metadata) {
+    static_cast<void>(output_id);
+    static_cast<void>(rtsp_session_id);
+    last_metadata_ = metadata;
+    ++metadata_set_count_;
+}
+
+void AirPlayLoopbackControlClient::clear_metadata(
+    const std::string& output_id,
+    const std::string& rtsp_session_id) {
+    static_cast<void>(output_id);
+    static_cast<void>(rtsp_session_id);
+    last_metadata_ = {};
+    ++metadata_clear_count_;
+}
+
 void AirPlayLoopbackControlClient::flush(const std::string& output_id, const std::string& rtsp_session_id) {
     static_cast<void>(output_id);
     static_cast<void>(rtsp_session_id);
@@ -2176,6 +2367,18 @@ size_t AirPlayLoopbackControlClient::audio_packet_count() const {
 
 size_t AirPlayLoopbackControlClient::volume_set_count() const {
     return volume_set_count_;
+}
+
+size_t AirPlayLoopbackControlClient::metadata_set_count() const {
+    return metadata_set_count_;
+}
+
+size_t AirPlayLoopbackControlClient::metadata_clear_count() const {
+    return metadata_clear_count_;
+}
+
+PlaybackMetadata AirPlayLoopbackControlClient::last_metadata() const {
+    return last_metadata_;
 }
 
 size_t AirPlayLoopbackControlClient::flush_count() const {

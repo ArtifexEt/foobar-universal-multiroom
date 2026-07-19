@@ -65,6 +65,16 @@ void AirPlayTransport::set_output_offset_ms(const std::string& id, int offset_ms
     registry_.set_output_offset_ms(resolve_output_id(id), offset_ms);
 }
 
+void AirPlayTransport::set_playback_metadata(const PlaybackMetadata& metadata) {
+    playback_metadata_ = metadata;
+    sessions_.set_metadata(metadata);
+}
+
+void AirPlayTransport::clear_playback_metadata() {
+    playback_metadata_.reset();
+    sessions_.clear_metadata();
+}
+
 void AirPlayTransport::open_stream(const PcmFormat& format) {
     if (format.sample_rate == 0 || format.channels == 0 || format.bits_per_sample == 0) {
         throw std::invalid_argument("PCM format must have non-zero sample rate, channels, and bit depth.");
@@ -80,6 +90,11 @@ void AirPlayTransport::connect_selected_outputs() {
     }
 
     sessions_.open_for_outputs(registry_.list(), stream_format_);
+    if (playback_metadata_) {
+        sessions_.set_metadata(*playback_metadata_);
+    } else {
+        sessions_.clear_metadata();
+    }
 }
 
 void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) {
@@ -124,6 +139,7 @@ void AirPlayTransport::flush() {
 }
 
 void AirPlayTransport::stop() {
+    sessions_.clear_metadata();
     sessions_.stop();
     stream_open_ = false;
 }
