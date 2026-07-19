@@ -474,8 +474,7 @@ private:
         if (list == nullptr) return TRUE;
 
         const int selected = ListView_GetNextItem(list, -1, LVNI_SELECTED);
-        const auto outputs = MultiroomComponentState::instance().outputs();
-        if (selected < 0 || selected >= static_cast<int>(outputs.size())) {
+        if (selected < 0 || selected >= static_cast<int>(speaker_list_output_ids_.size())) {
             ::MessageBoxW(wnd_, L"Select a speaker from the list.", MULTIROOM_PRODUCT_NAME_WIDE, MB_OK | MB_ICONWARNING);
             return TRUE;
         }
@@ -490,7 +489,9 @@ private:
             return TRUE;
         }
 
-        MultiroomComponentState::instance().pair_output(outputs[static_cast<size_t>(selected)].id, pin);
+        MultiroomComponentState::instance().pair_output(
+            speaker_list_output_ids_[static_cast<size_t>(selected)],
+            pin);
         update_status_page();
         ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
         return TRUE;
@@ -513,13 +514,12 @@ private:
             const auto* change = reinterpret_cast<const NMLISTVIEW*>(header);
             const UINT changed_state = (change->uOldState ^ change->uNewState) & LVIS_STATEIMAGEMASK;
             if ((change->uChanged & LVIF_STATE) != 0 && changed_state != 0 && change->iItem >= 0) {
-                const auto outputs = MultiroomComponentState::instance().outputs();
-                if (change->iItem < static_cast<int>(outputs.size())) {
+                if (change->iItem < static_cast<int>(speaker_list_output_ids_.size())) {
                     const bool visible = ListView_GetCheckState(
                         find_dlg_item(wnd_, idSpeakerList),
                         change->iItem) != FALSE;
                     MultiroomComponentState::instance().set_output_dropdown_visibility(
-                        outputs[static_cast<size_t>(change->iItem)].id,
+                        speaker_list_output_ids_[static_cast<size_t>(change->iItem)],
                         visible);
                 }
             }
@@ -588,9 +588,12 @@ private:
         const auto outputs = MultiroomComponentState::instance().outputs();
         updating_speaker_list_ = true;
         ListView_DeleteAllItems(list);
+        speaker_list_output_ids_.clear();
+        speaker_list_output_ids_.reserve(outputs.size());
 
         for (int index = 0; index < static_cast<int>(outputs.size()); ++index) {
             const auto& output = outputs[static_cast<size_t>(index)];
+            speaker_list_output_ids_.push_back(output.id);
             const std::array<std::wstring, 4> cells = {
                 widen_utf8(output.name.empty() ? output.id : output.name),
                 speaker_state_text(output),
@@ -619,6 +622,7 @@ private:
     HWND wnd_ = nullptr;
     fb2k::CCoreDarkModeHooks dark_;
     std::array<HWND, static_cast<size_t>(Page::Count)> page_wnds_ = {};
+    std::vector<std::string> speaker_list_output_ids_;
     int selected_page_ = 0;
     bool updating_speaker_list_ = false;
     HBRUSH background_brush_ = CreateSolidBrush(kDarkBackground);
