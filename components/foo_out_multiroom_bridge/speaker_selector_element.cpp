@@ -440,6 +440,11 @@ private:
     LRESULT on_timer(UINT, WPARAM wp, LPARAM, BOOL&) {
         if (wp != kRefreshTimer) return 0;
 
+        // Discovery/control can complete while the user is dragging a thumb.
+        // Rebuilding child windows at that point would destroy the active
+        // trackbar and discard its not-yet-committed local position.
+        if (volume_drag_active_) return 0;
+
         const auto outputs = MultiroomComponentState::instance().outputs();
         const auto status = MultiroomComponentState::instance().status_text();
         const auto signature = outputs_signature(outputs);
@@ -480,11 +485,16 @@ private:
         }
 
         const auto notification = LOWORD(wp);
-        if (notification != TB_THUMBTRACK && notification != TB_THUMBPOSITION) {
-            MultiroomComponentState::instance().set_output_volume(outputs_[index].id, volume);
-            outputs_signature_ = outputs_signature(outputs_);
-            if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+        if (notification == TB_THUMBTRACK || notification == TB_THUMBPOSITION) {
+            volume_drag_active_ = true;
+            return 0;
         }
+
+        volume_drag_active_ = false;
+        MultiroomComponentState::instance().set_output_volume(outputs_[index].id, volume);
+        outputs_signature_ = outputs_signature(outputs_);
+        if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+        SetTimer(kRefreshTimer, 250);
         return 0;
     }
 
@@ -883,6 +893,7 @@ private:
     std::vector<HWND> volume_labels_;
     CFont title_font_;
     size_t first_visible_row_ = 0;
+    bool volume_drag_active_ = false;
 };
 
 class SpeakerSelectorElement
