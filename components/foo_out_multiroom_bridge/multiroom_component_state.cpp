@@ -667,6 +667,10 @@ void MultiroomComponentState::control_update_worker() {
         try {
             ensure_discovery_started();
             std::lock_guard transport_lock(transport_mutex_);
+            // Stop may have completed after the snapshot was taken while this
+            // worker waited for the transport. Never reopen a receiver for a
+            // stream which foobar has already closed.
+            should_connect = should_connect && playback_open_.load();
             if (full_update || metadata_update_requested) {
                 if (metadata_active) {
                     transport_.set_playback_metadata(metadata_snapshot);
@@ -717,6 +721,7 @@ void MultiroomComponentState::control_update_worker() {
             }
         }
 
+        bool destination_label_changed = false;
         {
             std::lock_guard lock(mutex_);
             if (control_ok) {
@@ -725,10 +730,18 @@ void MultiroomComponentState::control_update_worker() {
                     cached_outputs_ = outputs_snapshot;
                     if (should_connect) {
                         active_output_names_ = std::move(active_output_names);
+                        destination_label_changed = true;
                     }
                 }
                 last_error_.clear();
             } else {
+                // set_enabled_outputs() closes sessions which are no longer
+                // selected before a replacement is opened. Never keep
+                // advertising those old sessions when the replacement fails.
+                if (full_update && should_connect) {
+                    active_output_names_.clear();
+                    destination_label_changed = true;
+                }
                 last_error_ = std::move(control_error);
             }
         }
@@ -737,6 +750,9 @@ void MultiroomComponentState::control_update_worker() {
             notify_multiroom_speaker_toolbar_changed();
             FB2K_console_formatter() << "[Universal Multiroom] Speaker control update applied";
         } else {
+            if (destination_label_changed) {
+                notify_multiroom_speaker_toolbar_changed();
+            }
             FB2K_console_formatter() << "[Universal Multiroom] Speaker control update failed: "
                                       << control_error_narrow.c_str();
         }
@@ -1105,6 +1121,8 @@ void MultiroomComponentState::stop_playback() {
             playback_engine_->stop();
         }
         playback_open_.store(false);
+        playback_open_cancel_requested_.store(false);
+        transport_.reset_pending_open_cancel();
         std::lock_guard lock(mutex_);
         playback_format_valid_ = false;
         playback_connecting_ = false;
@@ -1114,6 +1132,8 @@ void MultiroomComponentState::stop_playback() {
         {
             std::lock_guard transport_lock(transport_mutex_);
             playback_open_.store(false);
+            playback_open_cancel_requested_.store(false);
+            transport_.reset_pending_open_cancel();
         }
         std::lock_guard lock(mutex_);
         playback_format_valid_ = false;

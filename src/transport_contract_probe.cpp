@@ -345,6 +345,10 @@ bool exercise_cancelled_airplay_open() {
     ok &= expect(control_client->open_count() == 0, "cancelled setup should not call the control-client open path");
 
     transport.reset_pending_open_cancel();
+    transport.set_enabled_outputs({});
+    transport.set_enabled_outputs({"living-room"});
+    ok &= expect(transport.list_outputs().front().selected,
+                 "resetting a stopped setup should allow speaker selection while playback is stopped");
     transport.connect_selected_outputs();
     ok &= expect(control_client->open_count() == 1, "resetting cancellation should allow the next AirPlay setup");
     engine.stop();
