@@ -3,6 +3,7 @@
 #include "core/packet_scheduler.h"
 #include "transport.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -107,6 +108,8 @@ public:
         const std::string& output_id,
         const std::string& rtsp_session_id) = 0;
     virtual void flush(const std::string& output_id, const std::string& rtsp_session_id) = 0;
+    virtual void reset_pending_open_cancel() = 0;
+    virtual void cancel_pending_open() = 0;
     virtual void close(const std::string& output_id, const std::string& rtsp_session_id) = 0;
 };
 
@@ -136,6 +139,8 @@ public:
         const std::string& output_id,
         const std::string& rtsp_session_id) override;
     void flush(const std::string& output_id, const std::string& rtsp_session_id) override;
+    void reset_pending_open_cancel() override;
+    void cancel_pending_open() override;
     void close(const std::string& output_id, const std::string& rtsp_session_id) override;
 
 private:
@@ -151,7 +156,10 @@ private:
     std::map<std::string, AirPlayPairingCredentials> memory_pairing_credentials_;
     std::mutex remote_command_mutex_;
     AirPlayRemoteCommandHandler remote_command_handler_;
-    std::map<std::string, std::unique_ptr<Connection>> connections_;
+    std::mutex pending_connections_mutex_;
+    std::atomic_bool cancel_pending_open_requested_ = false;
+    std::map<std::string, std::shared_ptr<Connection>> pending_connections_;
+    std::map<std::string, std::shared_ptr<Connection>> connections_;
 };
 
 class AirPlayLoopbackControlClient final : public AirPlayControlClient {
@@ -177,6 +185,8 @@ public:
         const std::string& output_id,
         const std::string& rtsp_session_id) override;
     void flush(const std::string& output_id, const std::string& rtsp_session_id) override;
+    void reset_pending_open_cancel() override;
+    void cancel_pending_open() override;
     void close(const std::string& output_id, const std::string& rtsp_session_id) override;
 
     size_t open_count() const;

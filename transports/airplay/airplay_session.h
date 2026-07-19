@@ -3,6 +3,7 @@
 #include "airplay_rtsp.h"
 #include "core/packet_scheduler.h"
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -51,6 +52,8 @@ public:
     void clear_metadata();
     void enqueue(const ScheduledPacket& packet, const void* frames, size_t bytes);
     void flush();
+    void reset_pending_open_cancel();
+    void cancel_pending_open();
     void stop();
 
     std::vector<AirPlaySessionState> sessions() const;
@@ -62,6 +65,7 @@ private:
 
     mutable std::mutex mutex_;
     std::shared_ptr<AirPlayControlClient> control_client_;
+    std::atomic_bool cancel_open_requested_ = false;
     std::map<std::string, AirPlaySessionState> sessions_;
 };
 

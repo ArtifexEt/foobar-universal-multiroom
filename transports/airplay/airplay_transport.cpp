@@ -102,6 +102,14 @@ void AirPlayTransport::connect_selected_outputs() {
     }
 }
 
+void AirPlayTransport::cancel_pending_open() {
+    sessions_.cancel_pending_open();
+}
+
+void AirPlayTransport::reset_pending_open_cancel() {
+    sessions_.reset_pending_open_cancel();
+}
+
 void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) {
     if (!stream_open_) {
         throw std::logic_error("AirPlay stream is not open.");

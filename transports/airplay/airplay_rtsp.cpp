@@ -1035,6 +1035,9 @@ public:
 
         const auto try_connect_family = [&](int family) {
             for (addrinfo* address = addresses.begin(); address != nullptr; address = address->ai_next) {
+                if (cancelled_.load()) {
+                    throw std::runtime_error("AirPlay session setup cancelled.");
+                }
                 if (family != AF_UNSPEC && address->ai_family != family) {
                     continue;
                 }
@@ -1044,13 +1047,15 @@ public:
                     continue;
                 }
 
-                if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
-                    handle_ = candidate;
+                handle_.store(candidate);
+                if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0 &&
+                    !cancelled_.load()) {
                     configure_timeouts();
                     return true;
                 }
 
-                close_socket(candidate);
+                const auto owned = handle_.exchange(kInvalidSocket);
+                if (owned != kInvalidSocket) close_socket(owned);
             }
             return false;
         };
@@ -1060,6 +1065,14 @@ public:
         }
 
         throw std::runtime_error("Could not connect to AirPlay endpoint: " + host + ":" + std::to_string(port));
+    }
+
+    void cancel() {
+        cancelled_.store(true);
+        const auto handle = handle_.exchange(kInvalidSocket);
+        if (handle != kInvalidSocket) close_socket(handle);
+        const auto event_handle = event_handle_.exchange(kInvalidSocket);
+        if (event_handle != kInvalidSocket) close_socket(event_handle);
     }
 
     AirPlayRtspResponse exchange(const RtspRequest& request) {
@@ -1424,19 +1437,17 @@ public:
     }
 
     void close() {
+        cancel();
         event_running_ = false;
         timing_running_ = false;
-        const auto event_handle = event_handle_;
-        close_socket(event_handle);
+        const auto event_handle = event_handle_.exchange(kInvalidSocket);
+        if (event_handle != kInvalidSocket) close_socket(event_handle);
         if (event_thread_.joinable()) {
             event_thread_.join();
         }
         if (timing_thread_.joinable()) {
             timing_thread_.join();
         }
-        event_handle_ = kInvalidSocket;
-        close_socket(handle_);
-        handle_ = kInvalidSocket;
         reset_session_state();
 #ifdef _WIN32
         winsock_.reset();
@@ -1870,7 +1881,7 @@ private:
 #else
         socklen_t address_size = sizeof(address);
 #endif
-        if (getsockname(handle_, reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
+        if (getsockname(handle_.load(), reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
             return "0.0.0.0";
         }
 
@@ -1895,7 +1906,7 @@ private:
 #else
         socklen_t address_size = sizeof(address);
 #endif
-        if (getpeername(handle_, reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
+        if (getpeername(handle_.load(), reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
             throw std::runtime_error("Could not determine the connected AirPlay peer address.");
         }
 
@@ -1916,28 +1927,31 @@ private:
     void connect_event_channel(const std::string& host, uint16_t port) {
         AddrInfoList addresses(host, port, SOCK_STREAM);
         for (addrinfo* address = addresses.begin(); address != nullptr; address = address->ai_next) {
+            if (cancelled_.load()) return;
             socket_handle_t candidate = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
             if (candidate == kInvalidSocket) {
                 continue;
             }
 
-            if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
-                event_handle_ = candidate;
-                configure_socket_timeouts(event_handle_, 1000);
+            event_handle_.store(candidate);
+            if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0 &&
+                !cancelled_.load()) {
+                configure_socket_timeouts(event_handle_.load(), 1000);
                 start_event_worker();
                 return;
             }
 
-            close_socket(candidate);
+            const auto owned = event_handle_.exchange(kInvalidSocket);
+            if (owned != kInvalidSocket) close_socket(owned);
         }
     }
 
     void configure_timeouts() {
-        if (handle_ == kInvalidSocket) {
+        if (handle_.load() == kInvalidSocket) {
             return;
         }
 
-        configure_socket_timeouts(handle_, 10000);
+        configure_socket_timeouts(handle_.load(), 10000);
     }
 
     void configure_socket_timeouts(socket_handle_t handle, unsigned long timeout_ms) {
@@ -1959,11 +1973,11 @@ private:
     }
 
     void start_event_worker() {
-        if (!event_cipher_ || event_handle_ == kInvalidSocket || event_thread_.joinable()) {
+        if (!event_cipher_ || event_handle_.load() == kInvalidSocket || event_thread_.joinable()) {
             return;
         }
 
-        const auto event_handle = event_handle_;
+        const auto event_handle = event_handle_.load();
         event_running_ = true;
         event_thread_ = std::thread([this, event_handle] {
             event_loop(event_handle);
@@ -2134,9 +2148,9 @@ private:
         while (sent < size) {
             const auto remaining = size - sent;
 #ifdef _WIN32
-            const int rc = send(handle_, reinterpret_cast<const char*>(data + sent), static_cast<int>(remaining), 0);
+            const int rc = send(handle_.load(), reinterpret_cast<const char*>(data + sent), static_cast<int>(remaining), 0);
 #else
-            const ssize_t rc = send(handle_, data + sent, remaining, 0);
+            const ssize_t rc = send(handle_.load(), data + sent, remaining, 0);
 #endif
             if (rc <= 0) {
                 throw std::runtime_error("Could not write RTSP request to AirPlay endpoint.");
@@ -2159,9 +2173,9 @@ private:
     std::string read_plaintext_chunk() {
         char buffer[4096] = {};
 #ifdef _WIN32
-        const int received = recv(handle_, buffer, static_cast<int>(sizeof(buffer)), 0);
+        const int received = recv(handle_.load(), buffer, static_cast<int>(sizeof(buffer)), 0);
 #else
-        const ssize_t received = recv(handle_, buffer, sizeof(buffer), 0);
+        const ssize_t received = recv(handle_.load(), buffer, sizeof(buffer), 0);
 #endif
         if (received <= 0) {
             throw std::runtime_error("Could not read RTSP response from AirPlay endpoint.");
@@ -2203,7 +2217,8 @@ private:
         }
     }
 
-    socket_handle_t handle_ = kInvalidSocket;
+    std::atomic<socket_handle_t> handle_{kInvalidSocket};
+    std::atomic_bool cancelled_ = false;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
     uint32_t next_rtp_timestamp_ = 0;
@@ -2234,7 +2249,7 @@ private:
     std::function<void(const AirPlayRemoteCommandEvent&)> remote_command_handler_;
     std::atomic_bool event_running_ = false;
     std::thread event_thread_;
-    socket_handle_t event_handle_ = kInvalidSocket;
+    std::atomic<socket_handle_t> event_handle_{kInvalidSocket};
     std::atomic_bool timing_running_ = false;
     std::thread timing_thread_;
     LocalUdpPorts udp_ports_;
@@ -2342,14 +2357,38 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
         throw std::runtime_error("AirPlay 2 is required for streaming: " + output.id);
     }
 
-    auto connection = std::make_unique<Connection>();
+    auto connection = std::make_shared<Connection>();
     connection->set_remote_command_handler([this, output_id = output.id](const auto& event) {
         dispatch_remote_command(output_id, event);
     });
-    auto credentials = load_pairing_credentials(output);
-    auto session = connection->open_airplay2_transient(output, format, credentials);
-    connections_[output.id] = std::move(connection);
-    return session;
+    {
+        std::lock_guard lock(pending_connections_mutex_);
+        pending_connections_[output.id] = connection;
+    }
+    if (cancel_pending_open_requested_.load()) {
+        connection->cancel();
+    }
+
+    try {
+        auto credentials = load_pairing_credentials(output);
+        auto session = connection->open_airplay2_transient(output, format, credentials);
+        {
+            std::lock_guard lock(pending_connections_mutex_);
+            const auto pending = pending_connections_.find(output.id);
+            if (pending != pending_connections_.end() && pending->second == connection) {
+                pending_connections_.erase(pending);
+            }
+        }
+        connections_[output.id] = std::move(connection);
+        return session;
+    } catch (...) {
+        std::lock_guard lock(pending_connections_mutex_);
+        const auto pending = pending_connections_.find(output.id);
+        if (pending != pending_connections_.end() && pending->second == connection) {
+            pending_connections_.erase(pending);
+        }
+        throw;
+    }
 }
 
 void AirPlayRtspControlClient::send_audio(
@@ -2422,6 +2461,25 @@ void AirPlayRtspControlClient::flush(const std::string& output_id, const std::st
     }
 
     it->second->flush(rtsp_session_id);
+}
+
+void AirPlayRtspControlClient::reset_pending_open_cancel() {
+    cancel_pending_open_requested_.store(false);
+}
+
+void AirPlayRtspControlClient::cancel_pending_open() {
+    cancel_pending_open_requested_.store(true);
+    std::vector<std::shared_ptr<Connection>> pending;
+    {
+        std::lock_guard lock(pending_connections_mutex_);
+        pending.reserve(pending_connections_.size());
+        for (const auto& [_, connection] : pending_connections_) {
+            pending.push_back(connection);
+        }
+    }
+    for (const auto& connection : pending) {
+        connection->cancel();
+    }
 }
 
 void AirPlayRtspControlClient::close(const std::string& output_id, const std::string& rtsp_session_id) {
@@ -2531,6 +2589,10 @@ void AirPlayLoopbackControlClient::flush(const std::string& output_id, const std
     static_cast<void>(rtsp_session_id);
     ++flush_count_;
 }
+
+void AirPlayLoopbackControlClient::reset_pending_open_cancel() {}
+
+void AirPlayLoopbackControlClient::cancel_pending_open() {}
 
 void AirPlayLoopbackControlClient::close(const std::string& output_id, const std::string& rtsp_session_id) {
     static_cast<void>(output_id);

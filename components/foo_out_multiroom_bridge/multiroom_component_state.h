@@ -31,6 +31,7 @@ public:
     void set_playback_metadata(const multiroom::PlaybackMetadata& metadata);
     void update_playback_position(uint64_t position_ms);
     void clear_playback_metadata();
+    void cancel_pending_playback_open();
     void open_playback_stream(const multiroom::PcmFormat& format);
     void write_playback_pcm(const void* frames, size_t bytes);
     void flush_playback();
@@ -78,6 +79,7 @@ private:
     bool playback_connecting_ = false;
     int master_volume_percent_ = 100;
     std::atomic_bool playback_open_ = false;
+    std::atomic_bool playback_open_cancel_requested_ = false;
     std::atomic_bool playback_failure_stop_queued_ = false;
     std::atomic_bool shutting_down_ = false;
     std::deque<std::string> recent_remote_command_ids_;

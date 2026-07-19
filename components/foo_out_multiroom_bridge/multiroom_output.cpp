@@ -359,13 +359,19 @@ private:
                 lock.lock();
             }
         } catch (const std::exception& e) {
+            bool cancelled = false;
             {
                 std::lock_guard lock(queue_mutex_);
-                worker_error_ = e.what();
-                failure_stop_requested_ = true;
+                cancelled = stopping_;
+                if (!cancelled) {
+                    worker_error_ = e.what();
+                    failure_stop_requested_ = true;
+                }
                 started_ = false;
             }
-            MultiroomComponentState::instance().report_playback_failure(e.what());
+            if (!cancelled) {
+                MultiroomComponentState::instance().report_playback_failure(e.what());
+            }
         } catch (...) {
             const std::string message = "Unknown AirPlay render thread failure.";
             {
@@ -401,6 +407,7 @@ private:
         SetEvent(wake_event_);
 
         if (render_thread_.joinable()) {
+            MultiroomComponentState::instance().cancel_pending_playback_open();
             render_thread_.join();
         }
         in_flight_frames_.store(0);

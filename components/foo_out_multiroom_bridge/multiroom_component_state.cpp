@@ -538,9 +538,17 @@ void MultiroomComponentState::refresh_outputs_for_playback() {
     {
         std::lock_guard transport_lock(transport_mutex_);
         for (size_t attempt = 0; attempt < 2; ++attempt) {
-            transport_.refresh_discovery(std::chrono::milliseconds(2500));
-            refreshed_outputs = transport_.list_outputs();
-            apply_stored_output_state(refreshed_outputs);
+            for (size_t slice = 0; slice < 10; ++slice) {
+                if (playback_open_cancel_requested_.load()) {
+                    throw std::runtime_error("AirPlay playback setup cancelled.");
+                }
+                transport_.refresh_discovery(std::chrono::milliseconds(250));
+                refreshed_outputs = transport_.list_outputs();
+                apply_stored_output_state(refreshed_outputs);
+                if (!saved_selection_expected || !selected_ids(refreshed_outputs).empty()) {
+                    break;
+                }
+            }
             if (!saved_selection_expected || !selected_ids(refreshed_outputs).empty()) {
                 break;
             }
@@ -934,9 +942,18 @@ void MultiroomComponentState::clear_playback_metadata() {
     schedule_metadata_update();
 }
 
+void MultiroomComponentState::cancel_pending_playback_open() {
+    playback_open_cancel_requested_.store(true);
+    // Deliberately do not take transport_mutex_: the setup worker owns it while
+    // blocked in connect/send/recv. Closing its pending socket is what wakes it.
+    transport_.cancel_pending_open();
+}
+
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
     try {
         validate_playback_format(format);
+        playback_open_cancel_requested_.store(false);
+        transport_.reset_pending_open_cancel();
         {
             std::lock_guard lock(mutex_);
             playback_connecting_ = true;
@@ -946,6 +963,9 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
         notify_multiroom_speaker_toolbar_changed();
         ensure_discovery_started();
         refresh_outputs_for_playback();
+        if (playback_open_cancel_requested_.load()) {
+            throw std::runtime_error("AirPlay playback setup cancelled.");
+        }
 
         std::vector<multiroom::OutputDevice> outputs_snapshot;
         multiroom::PlaybackMetadata metadata_snapshot;
@@ -984,6 +1004,10 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
                 transport_.clear_playback_metadata();
             }
             transport_.connect_selected_outputs();
+            if (playback_open_cancel_requested_.load()) {
+                playback_engine_->stop();
+                throw std::runtime_error("AirPlay playback setup cancelled.");
+            }
             for (const auto& output : outputs_snapshot) {
                 transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
             }

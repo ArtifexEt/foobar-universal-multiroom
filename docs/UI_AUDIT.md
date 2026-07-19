@@ -52,6 +52,9 @@ its worker, and the foobar output called the full AirPlay connection path from
 `output::open()`. Both paths could include Bonjour waits and RTSP/crypto network
 round trips. Discovery now begins inside the refresh worker, while the output
 queues PCM and lets its render worker establish the native AirPlay session.
+Stopping or reopening output cancels the pending setup: discovery is performed
+in short cancellable slices and pending TCP/event sockets are closed to wake
+connect/send/receive immediately before the render worker is joined.
 
 ## Apple Music parity achieved
 

@@ -158,6 +158,8 @@ public:
         const multiroom::PlaybackMetadata&) override {}
     void clear_metadata(const std::string&, const std::string&) override {}
     void flush(const std::string&, const std::string&) override {}
+    void reset_pending_open_cancel() override {}
+    void cancel_pending_open() override {}
     void close(const std::string&, const std::string&) override {}
 
     size_t open_count() const { return open_count_; }
@@ -319,6 +321,33 @@ bool exercise_no_selected_outputs_sink() {
     engine.stop();
     ok &= expect(!engine.stream_open(), "no selected output sink stop should close the engine stream");
 
+    return ok;
+}
+
+bool exercise_cancelled_airplay_open() {
+    bool ok = true;
+    auto control_client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
+    multiroom::airplay::AirPlayTransport transport(control_client);
+    multiroom::MultiroomEngine engine(transport);
+    engine.start_discovery();
+    transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7350));
+    engine.select_outputs({"living-room"});
+    engine.open_stream({44100, 2, 16});
+
+    transport.cancel_pending_open();
+    bool cancelled = false;
+    try {
+        transport.connect_selected_outputs();
+    } catch (const std::exception&) {
+        cancelled = true;
+    }
+    ok &= expect(cancelled, "cancelled AirPlay setup should abort before opening a session");
+    ok &= expect(control_client->open_count() == 0, "cancelled setup should not call the control-client open path");
+
+    transport.reset_pending_open_cancel();
+    transport.connect_selected_outputs();
+    ok &= expect(control_client->open_count() == 1, "resetting cancellation should allow the next AirPlay setup");
+    engine.stop();
     return ok;
 }
 
@@ -570,6 +599,7 @@ int main() {
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");
         ok &= exercise_partial_airplay_open_failure();
         ok &= exercise_no_selected_outputs_sink();
+        ok &= exercise_cancelled_airplay_open();
         ok &= exercise_failed_reselection_does_not_drop_pcm();
         ok &= exercise_output_registry_retain();
         ok &= exercise_airplay_remote_commands();
