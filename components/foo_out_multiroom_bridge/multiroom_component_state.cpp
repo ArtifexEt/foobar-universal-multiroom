@@ -443,6 +443,13 @@ void MultiroomComponentState::ensure_discovery_started() {
 void MultiroomComponentState::refresh_outputs() {
     {
         std::lock_guard lock(mutex_);
+        // Discovery refresh takes the transport mutex and mutates the registry.
+        // Never let a UI refresh contend with PCM delivery or reconcile a
+        // transient mDNS snapshot into an active session. Queue it until Stop.
+        if (playback_open_.load() || playback_connecting_) {
+            refresh_deferred_until_stop_ = true;
+            return;
+        }
         if (refresh_in_progress_) {
             refresh_requested_ = true;
             return;
@@ -467,6 +474,20 @@ void MultiroomComponentState::refresh_outputs_worker() {
         try {
             ensure_discovery_started();
             std::lock_guard transport_lock(transport_mutex_);
+            {
+                std::lock_guard lock(mutex_);
+                // Recheck after acquiring the transport lock. Playback may
+                // have started after refresh_outputs() accepted this worker,
+                // or between two coalesced refresh iterations. If discovery
+                // owns the lock first, setup waits; if setup owns it first,
+                // discovery observes Connecting/Open here and is deferred.
+                if (playback_open_.load() || playback_connecting_) {
+                    refresh_deferred_until_stop_ = true;
+                    refresh_requested_ = false;
+                    refresh_in_progress_ = false;
+                    return;
+                }
+            }
             transport_.refresh_discovery();
             refreshed_outputs = transport_.list_outputs();
             apply_stored_output_state(refreshed_outputs);
@@ -520,12 +541,14 @@ void MultiroomComponentState::refresh_outputs_worker() {
         }
 
         if (!run_again) {
-            if (refresh_ok && playback_open_.load()) {
-                schedule_control_update();
-            }
             return;
         }
     }
+}
+
+bool MultiroomComponentState::playback_active() {
+    std::lock_guard lock(mutex_);
+    return playback_open_.load() || playback_connecting_;
 }
 
 void MultiroomComponentState::refresh_outputs_for_playback() {
@@ -783,7 +806,9 @@ void MultiroomComponentState::control_update_worker() {
 
 bool MultiroomComponentState::refresh_in_progress() {
     std::lock_guard lock(mutex_);
-    return refresh_in_progress_;
+    // UI polling must remain alive while an explicit refresh is queued behind
+    // active playback, then follow the worker through its eventual scan.
+    return refresh_in_progress_ || refresh_deferred_until_stop_;
 }
 
 bool MultiroomComponentState::control_in_progress() {
@@ -989,6 +1014,16 @@ void MultiroomComponentState::clear_playback_metadata() {
 void MultiroomComponentState::prepare_playback_open() {
     playback_open_cancel_requested_.store(false);
     transport_.reset_pending_open_cancel();
+    {
+        std::lock_guard lock(mutex_);
+        // Foobar returns from output::open() before the render thread begins
+        // the network handshake. Publish Connecting here so UI discovery
+        // cannot enter that asynchronous handoff window.
+        playback_connecting_ = true;
+        active_output_names_.clear();
+        last_error_.clear();
+    }
+    notify_multiroom_speaker_toolbar_changed();
 }
 
 void MultiroomComponentState::cancel_pending_playback_open() {
@@ -1001,13 +1036,6 @@ void MultiroomComponentState::cancel_pending_playback_open() {
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
     try {
         validate_playback_format(format);
-        {
-            std::lock_guard lock(mutex_);
-            playback_connecting_ = true;
-            active_output_names_.clear();
-            last_error_.clear();
-        }
-        notify_multiroom_speaker_toolbar_changed();
         ensure_discovery_started();
         refresh_outputs_for_playback();
         if (playback_open_cancel_requested_.load()) {
@@ -1072,10 +1100,13 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
             std::lock_guard lock(mutex_);
             cached_outputs_ = std::move(refreshed_outputs);
             active_output_names_ = std::move(active_output_names);
+            // Publish Open before clearing Connecting while holding the same
+            // lock used by playback_active(). A refresh must never observe a
+            // false/false gap after the AirPlay sessions are already ready.
+            playback_open_.store(true);
             playback_connecting_ = false;
             last_error_.clear();
         }
-        playback_open_.store(true);
         notify_multiroom_speaker_toolbar_changed();
         // Selection/volume callbacks may have run while the session handshake
         // was in progress. Reconcile once more now that reconnecting is safe.
@@ -1143,6 +1174,7 @@ void MultiroomComponentState::flush_playback() {
 }
 
 void MultiroomComponentState::stop_playback() {
+    bool run_deferred_refresh = false;
     try {
         std::lock_guard transport_lock(transport_mutex_);
         if (playback_engine_ && playback_open_.load()) {
@@ -1155,6 +1187,8 @@ void MultiroomComponentState::stop_playback() {
         playback_format_valid_ = false;
         playback_connecting_ = false;
         active_output_names_.clear();
+        run_deferred_refresh = refresh_deferred_until_stop_;
+        refresh_deferred_until_stop_ = false;
         last_error_.clear();
     } catch (const std::exception& e) {
         {
@@ -1171,6 +1205,9 @@ void MultiroomComponentState::stop_playback() {
         throw;
     }
     notify_multiroom_speaker_toolbar_changed();
+    if (run_deferred_refresh && !shutting_down_.load()) {
+        refresh_outputs();
+    }
 }
 
 void MultiroomComponentState::report_playback_failure(const std::string& message) {
@@ -1220,6 +1257,7 @@ std::wstring MultiroomComponentState::status_text() {
     if (!discovery_started_) return L"Discovery: not started";
     if (pairing_in_progress_) return L"Speakers: pairing";
     if (control_in_progress_) return L"Speakers: applying selection";
+    if (refresh_deferred_until_stop_) return L"Discovery: refresh queued until playback stops";
     if (refresh_in_progress_) {
         std::wstringstream stream;
         stream << L"Discovery: scanning";
