@@ -74,7 +74,8 @@ without changing the foobar UI.
   previous commands are decoded from the encrypted event channel and dispatched
   to foobar on its main thread. Duplicate command IDs from a speaker group are
   ignored, and a mid-stream transport failure requests one controlled foobar
-  stop instead of leaving the output in a retry loop.
+  stop instead of leaving the output in a retry loop. A receiver that rejects
+  remote-command advertisement keeps its already-negotiated audio session.
 - macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
   for the portable core/AirPlay path that uses system Bonjour and sends a real
   generated tone through `MultiroomEngine`.

@@ -81,7 +81,8 @@ select, authenticate, synchronize, and stream to speakers by itself.
   requests, decodes binary-plist `sendMediaRemoteCommand` events, and maps play,
   pause, toggle, stop, next, and previous onto foobar's main-thread playback
   control. Receiver `updateInfo` messages remain informational and cannot be
-  mistaken for playback commands.
+  mistaken for playback commands. Remote-command advertisement is treated as
+  a capability negotiation, so a non-supporting receiver can still play audio.
 
 ## Synchronization
 

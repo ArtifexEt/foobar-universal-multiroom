@@ -194,6 +194,9 @@ bool exercise_airplay_remote_commands() {
                  supported_commands->type == fxchain::airplay::bplist::Value::Type::Arr &&
                  supported_commands->arr.size() == 6,
                  "AirPlay sender should advertise six supported receiver playback commands");
+    ok &= expect(multiroom::airplay::airplay_remote_command_advertisement_accepted(200) &&
+                 !multiroom::airplay::airplay_remote_command_advertisement_accepted(404),
+                 "receiver rejection of remote commands should remain a non-audio capability result");
 
     for (const auto& [number, expected] : mappings) {
         const auto command_id = "remote-command-" + std::to_string(number);

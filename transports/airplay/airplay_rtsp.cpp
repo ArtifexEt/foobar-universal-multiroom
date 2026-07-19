@@ -917,6 +917,10 @@ std::string make_airplay_remote_supported_commands_body() {
     return std::string(reinterpret_cast<const char*>(encoded.data()), encoded.size());
 }
 
+bool airplay_remote_command_advertisement_accepted(int status_code) {
+    return status_code >= 200 && status_code < 300;
+}
+
 uint32_t airplay_progress_display_start(uint32_t track_start) {
     constexpr uint32_t kMetadataLeadFrames = 15360;
     return track_start >= kMetadataLeadFrames
@@ -1391,11 +1395,13 @@ public:
                 ap2_headers()));
         }
 
-        static_cast<void>(request_success(
+        const auto remote_command_response = request(
             "POST",
             "/command",
             ap2_headers({{"Content-Type", "application/x-apple-binary-plist"}}),
-            make_airplay_remote_supported_commands_body()));
+            make_airplay_remote_supported_commands_body());
+        const bool remote_commands_supported =
+            airplay_remote_command_advertisement_accepted(remote_command_response.status_code);
 
         auto ports = local_udp_ports().to_transport_ports();
         ports.server_data_port = stream_ports.first;
@@ -1406,7 +1412,10 @@ public:
         session.rtsp_session_id = std::to_string(ap2_session_id_);
         session.stream_uri = stream_uri_;
         session.server_name = "AirPlay2";
-        session.supported_methods = {"GET", "POST", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
+        session.supported_methods = {"GET", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
+        if (remote_commands_supported) {
+            session.supported_methods.push_back("POST");
+        }
         if (ap2_uses_ptp_) {
             session.supported_methods.push_back("SETPEERS");
         }
