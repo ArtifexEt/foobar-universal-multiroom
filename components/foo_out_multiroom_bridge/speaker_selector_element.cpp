@@ -24,11 +24,13 @@ static constexpr UINT_PTR kPairCommand = 32003;
 static constexpr UINT_PTR kPairPinLabelId = 32004;
 static constexpr UINT_PTR kVolumeLabelBase = 33000;
 static constexpr UINT_PTR kRefreshTimer = 34000;
-static constexpr int kPopupWidth = 396;
-static constexpr int kPopupPadding = 16;
-static constexpr int kHeaderHeight = 62;
-static constexpr int kRowHeight = 68;
-static constexpr int kFooterHeight = 46;
+static constexpr int kPopupWidth = 408;
+static constexpr int kPopupPadding = 22;
+static constexpr int kHeaderHeight = 92;
+static constexpr int kSectionHeight = 43;
+static constexpr int kRowHeight = 82;
+static constexpr int kFooterHeight = 54;
+static constexpr int kPairingFooterHeight = 94;
 static constexpr size_t kMaxVisibleRows = 7;
 static constexpr int kToolbarMinHeight = 22;
 static constexpr int kToolbarMaxHeight = 34;
@@ -148,6 +150,26 @@ void draw_airplay_audio_glyph(HDC hdc, CPoint center, COLORREF color, int radius
     WIN32_OP_D(dc.Polygon(triangle, static_cast<int>(std::size(triangle))));
 }
 
+void draw_speaker_glyph(HDC hdc, CRect bounds, COLORREF color) {
+    CDCHandle dc(hdc);
+    CPen outline;
+    WIN32_OP_D(outline.CreatePen(PS_SOLID, 1, color) != nullptr);
+    SelectObjectScope pen_scope(dc, outline);
+    SelectObjectScope brush_scope(dc, GetStockObject(NULL_BRUSH));
+
+    CRect cabinet(bounds.CenterPoint().x - 8, bounds.top + 2, bounds.CenterPoint().x + 8, bounds.bottom - 2);
+    WIN32_OP_D(dc.RoundRect(&cabinet, CPoint(4, 4)));
+
+    CBrush cone;
+    WIN32_OP_D(cone.CreateSolidBrush(color) != nullptr);
+    SelectObjectScope cone_scope(dc, cone);
+    SelectObjectScope cone_pen_scope(dc, GetStockObject(NULL_PEN));
+    CRect tweeter(cabinet.CenterPoint().x - 2, cabinet.top + 5, cabinet.CenterPoint().x + 2, cabinet.top + 9);
+    dc.Ellipse(&tweeter);
+    CRect woofer(cabinet.CenterPoint().x - 4, cabinet.bottom - 11, cabinet.CenterPoint().x + 4, cabinet.bottom - 3);
+    dc.Ellipse(&woofer);
+}
+
 class SpeakerPickerPopup
     : public CWindowImpl<SpeakerPickerPopup> {
 public:
@@ -190,6 +212,7 @@ public:
             nullptr,
             WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST) != nullptr);
+        apply_rounded_region();
         SetTimer(kRefreshTimer, 250);
         ShowWindow(SW_SHOW);
         SetFocus();
@@ -201,6 +224,8 @@ public:
         MSG_WM_PAINT(on_paint)
         MESSAGE_HANDLER(WM_COMMAND, on_command)
         MESSAGE_HANDLER(WM_DRAWITEM, on_draw_item)
+        MESSAGE_HANDLER(WM_CTLCOLORSTATIC, on_static_color)
+        MESSAGE_HANDLER(WM_CTLCOLOREDIT, on_edit_color)
         MESSAGE_HANDLER(WM_NOTIFY, on_notify)
         MESSAGE_HANDLER(WM_HSCROLL, on_scroll)
         MESSAGE_HANDLER(WM_VSCROLL, on_vertical_scroll)
@@ -216,12 +241,20 @@ public:
 
 private:
     LRESULT on_create(UINT, WPARAM, LPARAM, BOOL&) {
-        LOGFONTW title_font = {};
-        if (::GetObjectW(popup_font(), sizeof(title_font), &title_font) == sizeof(title_font)) {
+        LOGFONTW popup_logfont = {};
+        if (::GetObjectW(popup_font(), sizeof(popup_logfont), &popup_logfont) == sizeof(popup_logfont)) {
+            LOGFONTW title_font = popup_logfont;
             title_font.lfWeight = FW_SEMIBOLD;
             title_font.lfHeight = title_font.lfHeight < 0 ? title_font.lfHeight - 3 : title_font.lfHeight + 3;
             WIN32_OP_D(title_font_.CreateFontIndirect(&title_font) != nullptr);
+
+            LOGFONTW section_font = popup_logfont;
+            section_font.lfWeight = FW_SEMIBOLD;
+            WIN32_OP_D(section_font_.CreateFontIndirect(&section_font) != nullptr);
         }
+        WIN32_OP_D(background_brush_.CreateSolidBrush(background_color()) != nullptr);
+        WIN32_OP_D(control_background_brush_.CreateSolidBrush(control_background_color()) != nullptr);
+        WIN32_OP_D(footer_brush_.CreateSolidBrush(footer_color()) != nullptr);
         rebuild_controls();
         return 0;
     }
@@ -244,17 +277,14 @@ private:
         dc.SetTextColor(text_color());
         SelectObjectScope font_scope(dc, popup_font());
 
-        CRect title(kPopupPadding, 8, rc.right - kPopupPadding, 34);
+        draw_airplay_audio_glyph(dc.m_hDC, CPoint(rc.CenterPoint().x, 25), text_color(), 10);
+
+        CRect title(kPopupPadding, 42, rc.right - kPopupPadding, 76);
         SelectObjectScope title_scope(dc, title_font_.m_hFont != nullptr ? title_font_.m_hFont : popup_font());
-        WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &title, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX) > 0);
+        WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &title, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
 
         SelectObjectScope body_font_scope(dc, popup_font());
         dc.SetTextColor(secondary_text_color());
-        const auto subtitle = selection_summary();
-        CRect subtitle_rect(kPopupPadding, 32, rc.right - kPopupPadding - 76, 55);
-        WIN32_OP_D(dc.DrawTextW(subtitle.c_str(), -1, &subtitle_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
-
-        dc.SetTextColor(text_color());
 
         CPen divider;
         WIN32_OP_D(divider.CreatePen(PS_SOLID, 1, subtle_color()) != nullptr);
@@ -262,25 +292,53 @@ private:
         dc.MoveTo(0, kHeaderHeight - 1);
         dc.LineTo(rc.right, kHeaderHeight - 1);
 
-        int row_top = kHeaderHeight + 8;
+        CRect section(kPopupPadding, kHeaderHeight, rc.right - kPopupPadding, kHeaderHeight + kSectionHeight);
+        {
+            SelectObjectScope section_scope(dc, section_font_.m_hFont != nullptr ? section_font_.m_hFont : popup_font());
+            WIN32_OP_D(dc.DrawTextW(L"Speakers & TVs", -1, &section, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX) > 0);
+        }
+
+        const auto summary = selection_summary();
+        CRect count_rect(kPopupPadding + 160, kHeaderHeight, rc.right - kPopupPadding, kHeaderHeight + kSectionHeight);
+        WIN32_OP_D(dc.DrawTextW(summary.c_str(), -1, &count_rect, DT_SINGLELINE | DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+
+        int row_top = kHeaderHeight + kSectionHeight;
         const auto row_end = (std::min)(outputs_.size(), first_visible_row_ + visible_row_count());
         for (size_t index = first_visible_row_; index < row_end; ++index) {
-            CRect row(kPopupPadding, row_top, rc.right - kPopupPadding, row_top + kRowHeight - 6);
-            CBrush row_brush;
-            WIN32_OP_D(row_brush.CreateSolidBrush(row_color(outputs_[index].selected)) != nullptr);
-            SelectObjectScope row_brush_scope(dc, row_brush);
-            SelectObjectScope row_pen_scope(dc, GetStockObject(NULL_PEN));
-            dc.RoundRect(&row, CPoint(12, 12));
-
+            dc.MoveTo(kPopupPadding + 42, row_top + kRowHeight - 1);
+            dc.LineTo(rc.right - kPopupPadding, row_top + kRowHeight - 1);
             row_top += kRowHeight;
         }
+
+        const int footer_top = popup_height() - footer_height();
+        CRect footer(0, footer_top, rc.right, rc.bottom);
+        CBrush footer_brush;
+        WIN32_OP_D(footer_brush.CreateSolidBrush(footer_color()) != nullptr);
+        WIN32_OP_D(dc.FillRect(&footer, footer_brush));
 
         CPen footer_divider;
         WIN32_OP_D(footer_divider.CreatePen(PS_SOLID, 1, subtle_color()) != nullptr);
         SelectObjectScope footer_pen_scope(dc, footer_divider);
-        const int footer_top = popup_height() - kFooterHeight;
         dc.MoveTo(0, footer_top);
         dc.LineTo(rc.right, footer_top);
+    }
+
+    LRESULT on_static_color(UINT, WPARAM wp, LPARAM lp, BOOL&) {
+        HDC hdc = reinterpret_cast<HDC>(wp);
+        HWND control = reinterpret_cast<HWND>(lp);
+        ::SetBkMode(hdc, TRANSPARENT);
+        ::SetTextColor(hdc, secondary_text_color());
+        if (control != nullptr && ::GetDlgCtrlID(control) == static_cast<int>(kPairPinLabelId)) {
+            return reinterpret_cast<LRESULT>(footer_brush_.m_hBrush);
+        }
+        return reinterpret_cast<LRESULT>(background_brush_.m_hBrush);
+    }
+
+    LRESULT on_edit_color(UINT, WPARAM wp, LPARAM, BOOL&) {
+        HDC hdc = reinterpret_cast<HDC>(wp);
+        ::SetBkColor(hdc, control_background_color());
+        ::SetTextColor(hdc, text_color());
+        return reinterpret_cast<LRESULT>(control_background_brush_.m_hBrush);
     }
 
     LRESULT on_draw_item(UINT, WPARAM, LPARAM lp, BOOL&) {
@@ -299,16 +357,19 @@ private:
             const auto foreground = enabled ? text_color() : secondary_text_color();
 
             CBrush background;
-            WIN32_OP_D(background.CreateSolidBrush(row_color(output.selected)) != nullptr);
+            const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+            WIN32_OP_D(background.CreateSolidBrush(pressed ? pressed_row_color() : background_color()) != nullptr);
             WIN32_OP_D(dc.FillRect(&rc, background));
 
             const int center_y = rc.CenterPoint().y;
-            CRect indicator(rc.left + 3, center_y - 9, rc.left + 21, center_y + 9);
+            draw_speaker_glyph(dc.m_hDC, CRect(rc.left + 3, center_y - 14, rc.left + 29, center_y + 14), foreground);
+
+            CRect indicator(rc.right - 24, center_y - 9, rc.right - 6, center_y + 9);
             CPen ring;
             WIN32_OP_D(ring.CreatePen(PS_SOLID, 2, output.selected ? accent_color() : secondary_text_color()) != nullptr);
             SelectObjectScope ring_scope(dc, ring);
             CBrush indicator_brush;
-            WIN32_OP_D(indicator_brush.CreateSolidBrush(output.selected ? accent_color() : row_color(false)) != nullptr);
+            WIN32_OP_D(indicator_brush.CreateSolidBrush(output.selected ? accent_color() : background_color()) != nullptr);
             SelectObjectScope indicator_scope(dc, indicator_brush);
             dc.Ellipse(&indicator);
 
@@ -323,9 +384,17 @@ private:
 
             const auto name = widen_utf8(output.name.empty() ? output.id : output.name);
             dc.SetTextColor(foreground);
-            CRect name_rect(rc.left + 30, rc.top, rc.right - 4, rc.bottom);
+            CRect name_rect(rc.left + 42, rc.top, rc.right - 38, rc.bottom);
             WIN32_OP_D(dc.DrawTextW(name.c_str(), -1, &name_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
-        } else if (item->CtlID == kRefreshCommand || item->CtlID == kPairCommand) {
+        } else if (item->CtlID == kRefreshCommand) {
+            const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+            CBrush button_brush;
+            WIN32_OP_D(button_brush.CreateSolidBrush(pressed ? blend_color(footer_color(), accent_color(), 18) : footer_color()) != nullptr);
+            WIN32_OP_D(dc.FillRect(&rc, button_brush));
+            dc.SetTextColor(text_color());
+            SelectObjectScope title_scope(dc, section_font_.m_hFont != nullptr ? section_font_.m_hFont : popup_font());
+            WIN32_OP_D(dc.DrawTextW(L"Refresh Speakers & TVs", -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+        } else if (item->CtlID == kPairCommand) {
             wchar_t text[64] = {};
             ::GetWindowTextW(item->hwndItem, text, static_cast<int>(std::size(text)));
             const bool pressed = (item->itemState & ODS_SELECTED) != 0;
@@ -335,7 +404,7 @@ private:
             SelectObjectScope button_scope(dc, button_brush);
             SelectObjectScope pen_scope(dc, GetStockObject(NULL_PEN));
             dc.RoundRect(&rc, CPoint(12, 12));
-            dc.SetTextColor(item->CtlID == kRefreshCommand ? accent_color() : text_color());
+            dc.SetTextColor(text_color());
             WIN32_OP_D(dc.DrawTextW(text, -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
         }
 
@@ -353,10 +422,9 @@ private:
         if (header->idFrom < kSpeakerVolumeBase || header->idFrom >= kSpeakerVolumeBase + outputs_.size()) return 0;
 
         auto* custom = reinterpret_cast<NMCUSTOMDRAW*>(lp);
-        const auto index = static_cast<size_t>(header->idFrom - kSpeakerVolumeBase);
         if (custom->dwDrawStage == CDDS_PREPAINT) {
             CBrush background;
-            WIN32_OP_D(background.CreateSolidBrush(row_color(outputs_[index].selected)) != nullptr);
+            WIN32_OP_D(background.CreateSolidBrush(background_color()) != nullptr);
             ::FillRect(custom->hdc, &custom->rc, background);
             return CDRF_NOTIFYITEMDRAW;
         }
@@ -569,7 +637,7 @@ private:
                 status_.empty() ? L"No AirPlay speakers found" : status_.c_str(),
                 WS_CHILD | WS_VISIBLE | SS_CENTER | SS_EDITCONTROL,
                 kPopupPadding,
-                kHeaderHeight + 12,
+                kHeaderHeight + kSectionHeight + 12,
                 width - (kPopupPadding * 2),
                 42,
                 m_hWnd,
@@ -577,7 +645,7 @@ private:
                 core_api::get_my_instance(),
                 nullptr));
         } else {
-            int row_top = kHeaderHeight + 10;
+            int row_top = kHeaderHeight + kSectionHeight;
             const auto row_end = (std::min)(outputs_.size(), first_visible_row_ + visible_row_count());
             for (size_t index = first_visible_row_; index < row_end; ++index) {
                 create_speaker_row(index, row_top);
@@ -585,57 +653,60 @@ private:
             }
         }
 
-        add_control(::CreateWindowExW(
-            0,
-            L"STATIC",
-            L"PIN",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            kPopupPadding,
-            popup_height() - 31,
-            24,
-            20,
-            m_hWnd,
-            reinterpret_cast<HMENU>(kPairPinLabelId),
-            core_api::get_my_instance(),
-            nullptr));
+        const int footer_top = popup_height() - footer_height();
+        if (pairing_controls_visible()) {
+            add_control(::CreateWindowExW(
+                0,
+                L"STATIC",
+                L"AirPlay code",
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                kPopupPadding,
+                footer_top + 9,
+                92,
+                22,
+                m_hWnd,
+                reinterpret_cast<HMENU>(kPairPinLabelId),
+                core_api::get_my_instance(),
+                nullptr));
 
-        add_control(::CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"EDIT",
-            L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
-            kPopupPadding + 28,
-            popup_height() - 34,
-            54,
-            22,
-            m_hWnd,
-            reinterpret_cast<HMENU>(kPairPinEditId),
-            core_api::get_my_instance(),
-            nullptr));
+            add_control(::CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                L"EDIT",
+                L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
+                kPopupPadding + 100,
+                footer_top + 6,
+                92,
+                24,
+                m_hWnd,
+                reinterpret_cast<HMENU>(kPairPinEditId),
+                core_api::get_my_instance(),
+                nullptr));
+
+            add_control(::CreateWindowExW(
+                0,
+                L"BUTTON",
+                L"Pair",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                width - kPopupPadding - 70,
+                footer_top + 5,
+                70,
+                26,
+                m_hWnd,
+                reinterpret_cast<HMENU>(kPairCommand),
+                core_api::get_my_instance(),
+                nullptr));
+        }
 
         add_control(::CreateWindowExW(
             0,
             L"BUTTON",
-            L"Pair",
+            L"Refresh Speakers & TVs",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            kPopupPadding + 88,
-            popup_height() - 35,
-            58,
-            24,
-            m_hWnd,
-            reinterpret_cast<HMENU>(kPairCommand),
-            core_api::get_my_instance(),
-            nullptr));
-
-        add_control(::CreateWindowExW(
             0,
-            L"BUTTON",
-            L"Refresh",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            width - kPopupPadding - 88,
-            popup_height() - 35,
-            88,
-            24,
+            popup_height() - kFooterHeight,
+            width,
+            kFooterHeight,
             m_hWnd,
             reinterpret_cast<HMENU>(kRefreshCommand),
             core_api::get_my_instance(),
@@ -699,10 +770,10 @@ private:
             L"BUTTON",
             name.c_str(),
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_NOTIFY | (playable ? 0 : WS_DISABLED),
-            kPopupPadding + 8,
-            row_top + 3,
-            width - (kPopupPadding * 2) - 16,
-            28,
+            kPopupPadding,
+            row_top + 4,
+            width - (kPopupPadding * 2),
+            35,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerCheckBase + index),
             core_api::get_my_instance(),
@@ -714,8 +785,8 @@ private:
             nullptr,
             WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_TRANSPARENTBKGND | (playable ? 0 : WS_DISABLED),
             kPopupPadding + 42,
-            row_top + 34,
-            width - 166,
+            row_top + 42,
+            width - 164,
             24,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerVolumeBase + index),
@@ -727,9 +798,9 @@ private:
             L"STATIC",
             L"",
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
-            width - kPopupPadding - 80,
-            row_top + 36,
-            80,
+            width - kPopupPadding - 68,
+            row_top + 44,
+            68,
             20,
             m_hWnd,
             reinterpret_cast<HMENU>(kVolumeLabelBase + index),
@@ -787,9 +858,9 @@ private:
         const auto selected = std::count_if(outputs_.begin(), outputs_.end(), [](const auto& output) {
             return output.selected;
         });
-        if (outputs_.empty()) return L"Looking for available speakers";
-        if (selected == 0) return std::to_wstring(outputs_.size()) + L" available - none selected";
-        return std::to_wstring(selected) + (selected == 1 ? L" speaker selected" : L" speakers selected");
+        if (outputs_.empty()) return L"Searching...";
+        if (selected == 0) return std::to_wstring(outputs_.size()) + L" available";
+        return std::to_wstring(selected) + L" selected";
     }
 
     void update_scrollbar() {
@@ -817,7 +888,7 @@ private:
 
     int popup_height() const {
         const int body = outputs_.empty() ? 62 : static_cast<int>(visible_row_count()) * kRowHeight + 8;
-        return kHeaderHeight + body + kFooterHeight;
+        return kHeaderHeight + kSectionHeight + body + footer_height();
     }
 
     void resize_to_content() {
@@ -826,6 +897,27 @@ private:
         rc.bottom = rc.top + popup_height();
         keep_on_monitor(rc);
         WIN32_OP_D(::SetWindowPos(m_hWnd, HWND_TOPMOST, rc.left, rc.top, rc.Width(), rc.Height(), SWP_NOACTIVATE));
+        apply_rounded_region();
+    }
+
+    int footer_height() const {
+        return pairing_controls_visible() ? kPairingFooterHeight : kFooterHeight;
+    }
+
+    bool pairing_controls_visible() const {
+        return std::any_of(outputs_.begin(), outputs_.end(), [](const auto& output) {
+            return output.supports_airplay2 && output.requires_auth;
+        });
+    }
+
+    void apply_rounded_region() {
+        CRect window;
+        WIN32_OP_D(GetWindowRect(&window));
+        HRGN region = ::CreateRoundRectRgn(0, 0, window.Width() + 1, window.Height() + 1, 20, 20);
+        if (region == nullptr) return;
+        if (::SetWindowRgn(m_hWnd, region, TRUE) == 0) {
+            ::DeleteObject(region);
+        }
     }
 
     static void keep_on_monitor(CRect& rc) {
@@ -855,11 +947,11 @@ private:
     }
 
     COLORREF background_color() const {
-        return callback_.is_valid() ? callback_->query_std_color(ui_color_background) : GetSysColor(COLOR_WINDOW);
+        return callback_.is_valid() ? callback_->query_std_color(ui_color_background) : RGB(38, 38, 36);
     }
 
     COLORREF text_color() const {
-        return callback_.is_valid() ? callback_->query_std_color(ui_color_text) : GetSysColor(COLOR_WINDOWTEXT);
+        return callback_.is_valid() ? callback_->query_std_color(ui_color_text) : RGB(248, 248, 247);
     }
 
     COLORREF secondary_text_color() const {
@@ -878,10 +970,16 @@ private:
         return blend_color(background_color(), text_color(), 18);
     }
 
-    COLORREF row_color(bool selected) const {
-        return selected
-            ? blend_color(background_color(), accent_color(), color_is_dark(background_color()) ? 20 : 10)
-            : blend_color(background_color(), text_color(), color_is_dark(background_color()) ? 10 : 4);
+    COLORREF footer_color() const {
+        return blend_color(background_color(), text_color(), color_is_dark(background_color()) ? 12 : 7);
+    }
+
+    COLORREF control_background_color() const {
+        return blend_color(background_color(), text_color(), color_is_dark(background_color()) ? 9 : 4);
+    }
+
+    COLORREF pressed_row_color() const {
+        return blend_color(background_color(), accent_color(), color_is_dark(background_color()) ? 15 : 8);
     }
 
     HWND owner_ = nullptr;
@@ -892,6 +990,10 @@ private:
     std::vector<HWND> controls_;
     std::vector<HWND> volume_labels_;
     CFont title_font_;
+    CFont section_font_;
+    CBrush background_brush_;
+    CBrush control_background_brush_;
+    CBrush footer_brush_;
     size_t first_visible_row_ = 0;
     bool volume_drag_active_ = false;
 };
