@@ -398,17 +398,6 @@ private:
         std::vector<std::string> represented_group_ids;
 
         for (const auto& output : outputs) {
-            if (!output.supports_airplay2) {
-                if (group != nullptr) {
-                    for (const auto& id : group->output_ids) {
-                        if (id == output.id ||
-                            std::find(output.aliases.begin(), output.aliases.end(), id) != output.aliases.end()) {
-                            represented_group_ids.push_back(id);
-                        }
-                    }
-                }
-                continue;
-            }
             const bool member = group != nullptr && group_contains_output(*group, output);
             if (member) {
                 for (const auto& id : group->output_ids) {
@@ -421,7 +410,7 @@ private:
             add_group_member_row(
                 output.id,
                 widen_utf8(output.name.empty() ? output.id : output.name),
-                L"Available",
+                output.supports_airplay2 ? L"Available" : L"Unsupported",
                 member);
         }
 
