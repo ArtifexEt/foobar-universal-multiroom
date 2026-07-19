@@ -185,9 +185,15 @@ public:
         , callback_(callback) {}
 
     void open_below(HWND anchor) {
-        MultiroomComponentState::instance().refresh_outputs();
-        outputs_ = MultiroomComponentState::instance().outputs();
-        status_ = MultiroomComponentState::instance().status_text();
+        auto& state = MultiroomComponentState::instance();
+        outputs_ = state.outputs();
+        // Opening a view must be read-only for an active stream. Populate an
+        // empty cache asynchronously only while stopped; the explicit Refresh
+        // action is deferred by component state if playback is in progress.
+        if (outputs_.empty() && !state.playback_active()) {
+            state.refresh_outputs();
+        }
+        status_ = state.status_text();
         outputs_signature_ = outputs_signature(outputs_);
 
         INITCOMMONCONTROLSEX cc = {};

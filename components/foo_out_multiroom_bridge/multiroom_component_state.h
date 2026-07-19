@@ -21,6 +21,7 @@ public:
 
     void refresh_outputs();
     bool refresh_in_progress();
+    bool playback_active();
     bool control_in_progress();
     std::vector<multiroom::OutputDevice> outputs();
     void pair_output(const std::string& id, const std::string& pin);
@@ -70,6 +71,7 @@ private:
     bool discovery_started_ = false;
     bool refresh_in_progress_ = false;
     bool refresh_requested_ = false;
+    bool refresh_deferred_until_stop_ = false;
     bool control_in_progress_ = false;
     bool control_full_update_requested_ = false;
     std::set<std::string> control_volume_update_ids_;

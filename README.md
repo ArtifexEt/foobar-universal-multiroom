@@ -29,6 +29,10 @@ without changing the foobar UI.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
   volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
+- Opening the picker or native toolbar dropdown is read-only for the active
+  transport and never refreshes discovery, takes the PCM transport lock, or
+  reconciles sessions. A requested discovery refresh during playback is queued
+  until the stream stops.
 - `Universal Multiroom Audio Bridge...` is available as a normal foobar command and can be
   placed in the Buttons toolbar to open the compact multi-speaker selector.
 - Foobar2000 2.x also receives a native `Universal Multiroom Audio Bridge` toolbar dropdown. It shows the

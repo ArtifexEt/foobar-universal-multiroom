@@ -132,7 +132,8 @@ public:
     }
 
     void onDropDown() override {
-        if (playable_outputs().empty()) {
+        if (playable_outputs().empty() &&
+            !MultiroomComponentState::instance().playback_active()) {
             MultiroomComponentState::instance().refresh_outputs();
         }
         notify_toolbar_on_main_thread();

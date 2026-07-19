@@ -443,6 +443,13 @@ void MultiroomComponentState::ensure_discovery_started() {
 void MultiroomComponentState::refresh_outputs() {
     {
         std::lock_guard lock(mutex_);
+        // Discovery refresh takes the transport mutex and mutates the registry.
+        // Never let a UI refresh contend with PCM delivery or reconcile a
+        // transient mDNS snapshot into an active session. Queue it until Stop.
+        if (playback_open_.load() || playback_connecting_) {
+            refresh_deferred_until_stop_ = true;
+            return;
+        }
         if (refresh_in_progress_) {
             refresh_requested_ = true;
             return;
@@ -520,12 +527,14 @@ void MultiroomComponentState::refresh_outputs_worker() {
         }
 
         if (!run_again) {
-            if (refresh_ok && playback_open_.load()) {
-                schedule_control_update();
-            }
             return;
         }
     }
+}
+
+bool MultiroomComponentState::playback_active() {
+    std::lock_guard lock(mutex_);
+    return playback_open_.load() || playback_connecting_;
 }
 
 void MultiroomComponentState::refresh_outputs_for_playback() {
@@ -1143,6 +1152,7 @@ void MultiroomComponentState::flush_playback() {
 }
 
 void MultiroomComponentState::stop_playback() {
+    bool run_deferred_refresh = false;
     try {
         std::lock_guard transport_lock(transport_mutex_);
         if (playback_engine_ && playback_open_.load()) {
@@ -1155,6 +1165,8 @@ void MultiroomComponentState::stop_playback() {
         playback_format_valid_ = false;
         playback_connecting_ = false;
         active_output_names_.clear();
+        run_deferred_refresh = refresh_deferred_until_stop_;
+        refresh_deferred_until_stop_ = false;
         last_error_.clear();
     } catch (const std::exception& e) {
         {
@@ -1171,6 +1183,9 @@ void MultiroomComponentState::stop_playback() {
         throw;
     }
     notify_multiroom_speaker_toolbar_changed();
+    if (run_deferred_refresh && !shutting_down_.load()) {
+        refresh_outputs();
+    }
 }
 
 void MultiroomComponentState::report_playback_failure(const std::string& message) {
@@ -1220,6 +1235,7 @@ std::wstring MultiroomComponentState::status_text() {
     if (!discovery_started_) return L"Discovery: not started";
     if (pairing_in_progress_) return L"Speakers: pairing";
     if (control_in_progress_) return L"Speakers: applying selection";
+    if (refresh_deferred_until_stop_) return L"Discovery: refresh queued until playback stops";
     if (refresh_in_progress_) {
         std::wstringstream stream;
         stream << L"Discovery: scanning";
