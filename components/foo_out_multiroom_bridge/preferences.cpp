@@ -25,6 +25,7 @@ static constexpr UINT_PTR kStatusRefreshTimer = 42000;
 
 enum class Page {
     Status = 0,
+    Groups,
     About,
     Count,
 };
@@ -65,6 +66,16 @@ std::wstring widen(const char* text) {
 
 std::wstring widen_utf8(const std::string& text) {
     return widen(text.c_str());
+}
+
+std::string narrow_utf8(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int required = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 1) return {};
+    std::string result(static_cast<size_t>(required), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, result.data(), required, nullptr, nullptr);
+    result.resize(static_cast<size_t>(required - 1));
+    return result;
 }
 
 std::wstring endpoint_text(const multiroom::OutputDevice& output) {
@@ -228,11 +239,14 @@ private:
 
         HWND tabs = find_dlg_item(wnd_, idTabs);
         add_tab(tabs, 0, L"Status");
-        add_tab(tabs, 1, L"About");
+        add_tab(tabs, 1, L"Speaker Groups");
+        add_tab(tabs, 2, L"About");
 
         create_page(Page::Status, IDD_MULTIROOM_PAGE_STATUS);
+        create_page(Page::Groups, IDD_MULTIROOM_PAGE_GROUPS);
         create_page(Page::About, IDD_MULTIROOM_PAGE_ABOUT);
         populate_status_page();
+        populate_groups_page();
         update_status_page();
         populate_about_page();
         position_pages();
@@ -271,6 +285,150 @@ private:
 
     void populate_status_page() {
         configure_speaker_list();
+    }
+
+    void populate_groups_page() {
+        HWND members = find_dlg_item(wnd_, idGroupMemberList);
+        if (members != nullptr) {
+            ListView_SetExtendedListViewStyle(
+                members,
+                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES);
+            while (ListView_DeleteColumn(members, 0)) {
+            }
+            add_speaker_column(members, 0, L"Speaker", 190);
+            add_speaker_column(members, 1, L"Availability", 95);
+        }
+        reload_group_list({});
+    }
+
+    int selected_group_index() const {
+        HWND list = find_dlg_item(wnd_, idGroupList);
+        if (list == nullptr) return -1;
+        const auto selected = static_cast<int>(::SendMessageW(list, LB_GETCURSEL, 0, 0));
+        return selected >= 0 && selected < static_cast<int>(speaker_groups_.size()) ? selected : -1;
+    }
+
+    void reload_group_list(const std::string& preferred_id) {
+        HWND list = find_dlg_item(wnd_, idGroupList);
+        if (list == nullptr) return;
+
+        speaker_groups_ = MultiroomComponentState::instance().speaker_groups();
+        ::SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        int selected = -1;
+        for (int index = 0; index < static_cast<int>(speaker_groups_.size()); ++index) {
+            const auto name = widen_utf8(speaker_groups_[static_cast<size_t>(index)].name);
+            ::SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+            if (speaker_groups_[static_cast<size_t>(index)].id == preferred_id) selected = index;
+        }
+        if (selected < 0 && !speaker_groups_.empty()) selected = 0;
+        ::SendMessageW(list, LB_SETCURSEL, selected, 0);
+        if (selected >= 0) {
+            load_selected_group();
+        } else {
+            begin_new_group();
+        }
+    }
+
+    void begin_new_group() {
+        if (HWND list = find_dlg_item(wnd_, idGroupList); list != nullptr) {
+            ::SendMessageW(list, LB_SETCURSEL, -1, 0);
+        }
+        editing_group_id_.clear();
+        if (HWND name = find_dlg_item(wnd_, idGroupName); name != nullptr) {
+            ::SetWindowTextW(name, L"");
+        }
+        populate_group_members(nullptr);
+        set_group_action_state(false);
+        if (HWND name = find_dlg_item(wnd_, idGroupName); name != nullptr) ::SetFocus(name);
+    }
+
+    void load_selected_group() {
+        const int selected = selected_group_index();
+        if (selected < 0) {
+            begin_new_group();
+            return;
+        }
+        const auto& group = speaker_groups_[static_cast<size_t>(selected)];
+        editing_group_id_ = group.id;
+        const auto name = widen_utf8(group.name);
+        if (HWND edit = find_dlg_item(wnd_, idGroupName); edit != nullptr) {
+            ::SetWindowTextW(edit, name.c_str());
+        }
+        populate_group_members(&group);
+        set_group_action_state(true);
+    }
+
+    void set_group_action_state(bool existing_group) {
+        if (HWND button = find_dlg_item(wnd_, idGroupDeleteButton); button != nullptr) {
+            ::EnableWindow(button, existing_group);
+        }
+        if (HWND button = find_dlg_item(wnd_, idGroupApplyButton); button != nullptr) {
+            ::EnableWindow(button, existing_group);
+        }
+    }
+
+    static bool group_contains_output(
+        const multiroom::SpeakerGroup& group,
+        const multiroom::OutputDevice& output) {
+        return std::any_of(group.output_ids.begin(), group.output_ids.end(), [&](const auto& id) {
+            return id == output.id ||
+                std::find(output.aliases.begin(), output.aliases.end(), id) != output.aliases.end();
+        });
+    }
+
+    void populate_group_members(const multiroom::SpeakerGroup* group) {
+        HWND list = find_dlg_item(wnd_, idGroupMemberList);
+        if (list == nullptr) return;
+
+        ListView_DeleteAllItems(list);
+        group_member_output_ids_.clear();
+        const auto outputs = MultiroomComponentState::instance().outputs();
+        std::vector<std::string> represented_group_ids;
+
+        for (const auto& output : outputs) {
+            const bool member = group != nullptr && group_contains_output(*group, output);
+            if (member) {
+                for (const auto& id : group->output_ids) {
+                    if (id == output.id ||
+                        std::find(output.aliases.begin(), output.aliases.end(), id) != output.aliases.end()) {
+                        represented_group_ids.push_back(id);
+                    }
+                }
+            }
+            add_group_member_row(
+                output.id,
+                widen_utf8(output.name.empty() ? output.id : output.name),
+                output.supports_airplay2 ? L"Available" : L"Unsupported",
+                member);
+        }
+
+        if (group != nullptr) {
+            for (const auto& id : group->output_ids) {
+                if (std::find(represented_group_ids.begin(), represented_group_ids.end(), id) != represented_group_ids.end()) {
+                    continue;
+                }
+                add_group_member_row(id, widen_utf8(id), L"Unavailable", true);
+            }
+        }
+    }
+
+    void add_group_member_row(
+        const std::string& id,
+        const std::wstring& name,
+        const wchar_t* availability,
+        bool checked) {
+        HWND list = find_dlg_item(wnd_, idGroupMemberList);
+        if (list == nullptr) return;
+        const int index = static_cast<int>(group_member_output_ids_.size());
+        group_member_output_ids_.push_back(id);
+
+        LVITEMW item = {};
+        item.mask = LVIF_TEXT;
+        item.iItem = index;
+        item.pszText = const_cast<wchar_t*>(name.c_str());
+        ListView_InsertItem(list, &item);
+        ListView_SetItemText(list, index, 1, const_cast<wchar_t*>(availability));
+        ListView_SetCheckState(list, index, checked ? TRUE : FALSE);
     }
 
     void configure_speaker_list() {
@@ -446,6 +604,11 @@ private:
     INT_PTR on_command(WPARAM wp) {
         const WORD id = LOWORD(wp);
         const WORD code = HIWORD(wp);
+
+        if (id == idGroupList && code == LBN_SELCHANGE) {
+            load_selected_group();
+            return TRUE;
+        }
         if (code != BN_CLICKED) return FALSE;
 
         if (id == idSupportButton) {
@@ -465,8 +628,67 @@ private:
         if (id == idPairButton) {
             return pair_selected_airplay_output();
         }
+        if (id == idGroupNewButton) {
+            begin_new_group();
+            return TRUE;
+        }
+        if (id == idGroupSaveButton) {
+            return save_group_editor();
+        }
+        if (id == idGroupDeleteButton) {
+            return delete_selected_group();
+        }
+        if (id == idGroupApplyButton) {
+            return apply_selected_group();
+        }
 
         return FALSE;
+    }
+
+    INT_PTR save_group_editor() {
+        try {
+            const auto name = narrow_utf8(trim(text_from_item(wnd_, idGroupName)));
+            std::vector<std::string> members;
+            HWND list = find_dlg_item(wnd_, idGroupMemberList);
+            if (list != nullptr) {
+                for (int index = 0; index < static_cast<int>(group_member_output_ids_.size()); ++index) {
+                    if (ListView_GetCheckState(list, index) != FALSE) {
+                        members.push_back(group_member_output_ids_[static_cast<size_t>(index)]);
+                    }
+                }
+            }
+            const auto saved_id = MultiroomComponentState::instance().save_speaker_group(
+                editing_group_id_, name, members);
+            reload_group_list(saved_id);
+            return TRUE;
+        } catch (const std::exception& e) {
+            const auto message = widen_utf8(e.what());
+            ::MessageBoxW(wnd_, message.c_str(), MULTIROOM_PRODUCT_NAME_WIDE, MB_OK | MB_ICONWARNING);
+            return TRUE;
+        }
+    }
+
+    INT_PTR delete_selected_group() {
+        const int selected = selected_group_index();
+        if (selected < 0) return TRUE;
+        const auto& group = speaker_groups_[static_cast<size_t>(selected)];
+        const auto prompt = L"Delete the speaker group \"" + widen_utf8(group.name) + L"\"?";
+        if (::MessageBoxW(wnd_, prompt.c_str(), MULTIROOM_PRODUCT_NAME_WIDE, MB_YESNO | MB_ICONQUESTION) != IDYES) {
+            return TRUE;
+        }
+        MultiroomComponentState::instance().delete_speaker_group(group.id);
+        reload_group_list({});
+        return TRUE;
+    }
+
+    INT_PTR apply_selected_group() {
+        const int selected = selected_group_index();
+        if (selected < 0) return TRUE;
+        MultiroomComponentState::instance().activate_speaker_group(
+            speaker_groups_[static_cast<size_t>(selected)].id);
+        update_status_page();
+        ::SetTimer(wnd_, kStatusRefreshTimer, 250, nullptr);
+        return TRUE;
     }
 
     INT_PTR pair_selected_airplay_output() {
@@ -623,6 +845,9 @@ private:
     fb2k::CCoreDarkModeHooks dark_;
     std::array<HWND, static_cast<size_t>(Page::Count)> page_wnds_ = {};
     std::vector<std::string> speaker_list_output_ids_;
+    std::vector<multiroom::SpeakerGroup> speaker_groups_;
+    std::vector<std::string> group_member_output_ids_;
+    std::string editing_group_id_;
     int selected_page_ = 0;
     bool updating_speaker_list_ = false;
     HBRUSH background_brush_ = CreateSolidBrush(kDarkBackground);

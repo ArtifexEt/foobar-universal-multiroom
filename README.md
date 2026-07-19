@@ -39,7 +39,9 @@ without changing the foobar UI.
   current group, exposes quick speaker toggles, and opens the full picker.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
-  speakers.
+  speakers. The Speaker Groups tab creates, edits, deletes, and applies named
+  virtual groups; saved groups are also available in the toolbar dropdown and
+  the full speaker picker.
 - The transport-neutral core includes output state, packet scheduling, stream
   clocking, and the AirPlay transport boundary.
 - AirPlay discovery now classifies AirPlay 2, legacy unencrypted L16, auth, and

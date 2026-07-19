@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
@@ -16,10 +17,14 @@ static constexpr GUID guid_cfg_airplay_pairing_credentials = {
     0xf9fecc9d, 0x639a, 0x45ad, {0x8a, 0x11, 0x4b, 0x55, 0x5f, 0x6f, 0x50, 0xa4}};
 static constexpr GUID guid_cfg_airplay_output_state = {
     0x5e565c70, 0x8175, 0x4c61, {0xb4, 0x22, 0x99, 0x8d, 0x4f, 0x7c, 0x65, 0x19}};
+static constexpr GUID guid_cfg_speaker_groups = {
+    0x472924a6, 0x5daa, 0x47d8, {0xa0, 0x45, 0xda, 0xb3, 0xaf, 0xe9, 0x5c, 0x41}};
 
 static cfg_string cfg_airplay_pairing_credentials(guid_cfg_airplay_pairing_credentials, "");
 static cfg_string cfg_airplay_output_state(guid_cfg_airplay_output_state, "");
+static cfg_string cfg_speaker_groups(guid_cfg_speaker_groups, "");
 static std::mutex cfg_airplay_output_state_mutex;
+static std::mutex cfg_speaker_groups_mutex;
 
 struct StoredOutputState {
     std::string output_id;
@@ -201,6 +206,29 @@ bool has_stored_selected_output() {
     return std::any_of(states.begin(), states.end(), [](const auto& state) {
         return state.selected;
     });
+}
+
+std::vector<multiroom::SpeakerGroup> load_speaker_groups() {
+    std::lock_guard lock(cfg_speaker_groups_mutex);
+    return multiroom::deserialize_speaker_groups(cfg_speaker_groups.get().c_str());
+}
+
+std::string new_speaker_group_id() {
+    GUID guid = {};
+    if (FAILED(::CoCreateGuid(&guid))) {
+        throw std::runtime_error("Could not create a speaker group identifier.");
+    }
+    char text[37] = {};
+    std::snprintf(
+        text,
+        sizeof(text),
+        "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        static_cast<unsigned long>(guid.Data1),
+        guid.Data2,
+        guid.Data3,
+        guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+        guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+    return text;
 }
 
 std::vector<multiroom::airplay::AirPlayPairingCredentials> parse_pairing_credentials_text(const std::string& text) {
@@ -920,6 +948,127 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
         std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
     }
+}
+
+static bool output_available_for_group(const multiroom::OutputDevice& output) {
+    return output.supports_airplay2 && !output.endpoint_host.empty() && output.endpoint_port != 0;
+}
+
+std::vector<multiroom::SpeakerGroup> MultiroomComponentState::speaker_groups() {
+    return load_speaker_groups();
+}
+
+std::string MultiroomComponentState::save_speaker_group(
+    const std::string& id,
+    const std::string& name,
+    const std::vector<std::string>& output_ids) {
+    auto group = multiroom::normalize_speaker_group({id, name, output_ids});
+    if (group.name.empty()) {
+        throw std::invalid_argument("Speaker group name cannot be empty.");
+    }
+    if (group.output_ids.empty()) {
+        throw std::invalid_argument("Select at least one speaker for the group.");
+    }
+    if (group.id.empty()) group.id = new_speaker_group_id();
+
+    {
+        std::lock_guard lock(cfg_speaker_groups_mutex);
+        auto groups = multiroom::deserialize_speaker_groups(cfg_speaker_groups.get().c_str());
+        const auto duplicate_name = std::find_if(groups.begin(), groups.end(), [&](const auto& existing) {
+            return existing.id != group.id && _stricmp(existing.name.c_str(), group.name.c_str()) == 0;
+        });
+        if (duplicate_name != groups.end()) {
+            throw std::invalid_argument("A speaker group with this name already exists.");
+        }
+
+        const auto existing = std::find_if(groups.begin(), groups.end(), [&](const auto& candidate) {
+            return candidate.id == group.id;
+        });
+        if (existing == groups.end()) {
+            groups.push_back(group);
+        } else {
+            *existing = group;
+        }
+        const auto serialized = multiroom::serialize_speaker_groups(groups);
+        cfg_speaker_groups = serialized.c_str();
+    }
+    notify_multiroom_speaker_toolbar_changed();
+    return group.id;
+}
+
+void MultiroomComponentState::delete_speaker_group(const std::string& id) {
+    bool changed = false;
+    {
+        std::lock_guard lock(cfg_speaker_groups_mutex);
+        auto groups = multiroom::deserialize_speaker_groups(cfg_speaker_groups.get().c_str());
+        const auto old_size = groups.size();
+        groups.erase(
+            std::remove_if(groups.begin(), groups.end(), [&](const auto& group) { return group.id == id; }),
+            groups.end());
+        changed = groups.size() != old_size;
+        if (changed) {
+            const auto serialized = multiroom::serialize_speaker_groups(groups);
+            cfg_speaker_groups = serialized.c_str();
+        }
+    }
+    if (changed) notify_multiroom_speaker_toolbar_changed();
+}
+
+bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
+    try {
+        const auto groups = load_speaker_groups();
+        const auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& candidate) {
+            return candidate.id == id;
+        });
+        if (group == groups.end()) throw std::invalid_argument("Speaker group no longer exists.");
+
+        std::vector<multiroom::OutputDevice> changed_outputs;
+        {
+            std::lock_guard lock(mutex_);
+            auto available_outputs = cached_outputs_;
+            available_outputs.erase(
+                std::remove_if(available_outputs.begin(), available_outputs.end(), [](const auto& output) {
+                    return !output_available_for_group(output);
+                }),
+                available_outputs.end());
+            const auto resolved_ids = multiroom::resolve_speaker_group_output_ids(*group, available_outputs);
+            if (resolved_ids.empty()) {
+                throw std::runtime_error("None of this group's speakers are currently available.");
+            }
+            for (auto& output : cached_outputs_) {
+                const bool selected = std::find(resolved_ids.begin(), resolved_ids.end(), output.id) != resolved_ids.end();
+                if (output.selected != selected) {
+                    output.selected = selected;
+                    changed_outputs.push_back(output);
+                }
+            }
+            last_error_.clear();
+        }
+
+        for (const auto& output : changed_outputs) update_stored_output_state(output);
+        notify_multiroom_speaker_toolbar_changed();
+        schedule_control_update();
+        return true;
+    } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
+        last_error_ = widen_utf8(e.what());
+        return false;
+    }
+}
+
+std::string MultiroomComponentState::active_speaker_group_id() {
+    const auto groups = load_speaker_groups();
+    std::lock_guard lock(mutex_);
+    auto available_outputs = cached_outputs_;
+    available_outputs.erase(
+        std::remove_if(available_outputs.begin(), available_outputs.end(), [](const auto& output) {
+            return !output_available_for_group(output);
+        }),
+        available_outputs.end());
+    const auto active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
+        return multiroom::speaker_group_matches_selection(group, available_outputs);
+    });
+    return active == groups.end() ? std::string{} : active->id;
 }
 
 void MultiroomComponentState::set_output_dropdown_visibility(const std::string& id, bool visible) {

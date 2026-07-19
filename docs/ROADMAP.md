@@ -51,7 +51,7 @@ Acceptance:
 
 ## Phase 4 - Usability
 
-- Add presets.
+- [x] Add named virtual speaker-group presets with Preferences editing and picker/toolbar activation.
 - Add status/error messages.
 - Add auth warning, optional PIN flow, and persisted pair-verify credentials.
 - Extend the implemented encrypted AirPlay 2 play/pause/stop/next/previous

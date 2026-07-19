@@ -22,6 +22,7 @@ Apple Music. Preferences and protocol diagnostics are intentionally secondary.
 | Receiver playback controls | Complete | Encrypted AirPlay events for play, pause, toggle, stop, next, and previous are applied to foobar on its main thread; duplicate group events are suppressed. |
 | Non-blocking UI/startup | Fixed in this pass | Popup/preferences discovery starts on the refresh worker. AirPlay discovery, pair verification, session SETUP, metadata setup, receiver connection, and seek/flush network work run on workers instead of blocking `output::open()` or a foobar UI callback. |
 | Current playback destination | Fixed in this pass | Toolbar labels are derived from ready/open AirPlay sessions rather than the persisted speaker checkboxes, and are refreshed on connect, reconfiguration, failure, and stop. |
+| Named virtual groups | Complete | Preferences provide a dedicated group editor with persisted names and member checkboxes. Applying a group replaces the selected set atomically, resolves discovery aliases, skips temporarily unavailable members, and is exposed in both speaker selection surfaces. |
 
 ## Root cause of the volume stall
 
@@ -85,7 +86,7 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
 1. Expose per-speaker latency offset in the everyday picker. The transport and
    registry support it, but the current popup does not provide the planned
    control.
-2. Add named group presets and recent groups.
+2. Add a compact recent-groups history in addition to the completed named virtual groups.
 3. Surface per-speaker session phases and actionable inline errors instead of
    relying mainly on the shared status text and console.
 4. Map device-side volume feedback so receiver changes update foobar and every
