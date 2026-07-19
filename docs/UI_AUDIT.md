@@ -13,7 +13,7 @@ Apple Music. Preferences and protocol diagnostics are intentionally secondary.
 | Playback command | Complete | `Playback > AirPlay Speakers...` opens the full picker and can be assigned to foobar's Buttons toolbar. |
 | Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `AirPlay`, with a live group label, quick toggles, and an entry into the full picker. |
 | Dockable compact control | Complete | Default UI utility element with a scalable AirPlay audio glyph, current selection, keyboard activation, focus state, light/dark colors, and a compact icon-only layout. |
-| Speaker popup | Complete for normal selection | Popover positioning, scrollable speaker list, selected-state emphasis, custom check indicators, custom accent sliders, percentages, refresh, PIN pairing, dark/light adaptation, and automatic dismissal. |
+| Speaker popup | Complete for normal selection | Apple Music-style hierarchy with a centered AirPlay header, `Speakers & TVs` section, flat device rows, speaker glyphs, trailing check indicators, custom accent sliders, percentages, conditional PIN pairing, rounded popover clipping, refresh footer, scrolling, theme adaptation, and automatic dismissal. |
 | Persisted selection and volume | Complete | Canonical speaker IDs and aliases retain selection/volume across discovery identity promotion. |
 | Live per-speaker volume | Fixed in this pass | Thumb tracking updates the UI locally; the final value is persisted and sent through a coalesced volume-only path. It no longer runs output selection, session connection, and all-device volume work for every pixel of a drag. |
 | Master volume | Complete | Foobar's main volume remains a group multiplier and now shares the coalesced volume-only path. |
@@ -39,12 +39,20 @@ The corrected split is:
 ## Apple Music parity achieved
 
 - a compact AirPlay audio glyph instead of a text-only generic button;
-- clear title, selection summary, spacious rows, and restrained dividers;
+- a centered AirPlay glyph/title header and a separate `Speakers & TVs` section;
+- flat, spacious device rows with a speaker glyph on the leading edge, the
+  selection control on the trailing edge, and restrained inset dividers;
+- per-device volume directly beneath the device name, without turning each
+  output into a separate Windows-style card;
 - blue system-style accent for selected outputs and active slider ranges;
-- rounded selection surfaces rather than Windows group-box/table styling;
+- a single rounded popover surface with a distinct full-width footer action;
+- PIN controls shown only when discovery reports an explicit password/PIN
+  requirement, so transient AirPlay 2 encryption does not clutter the normal
+  picker and it stays focused on routing;
 - current group shown directly in the wide toolbar state;
 - icon-only fallback at narrow toolbar widths;
-- consistent light and dark appearances derived from foobar theme colors.
+- consistent light and dark appearances derived from foobar theme colors, with
+  a dark Apple-style default for the command surface that has no UI callback.
 
 ## Remaining work
 
@@ -64,3 +72,7 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
    existing keyboard/focus support.
 7. Validate final spacing, hit targets, scaling, and color contrast on 100%,
    125%, 150%, and 200% Windows display scaling with the packaged PR artifact.
+8. Add first-class receiver-type metadata to discovery if product-specific
+   icons (HomePod, Apple TV, Mac, television) are desired. The current picker
+   intentionally uses one honest generic speaker glyph instead of guessing a
+   device class from its display name.
