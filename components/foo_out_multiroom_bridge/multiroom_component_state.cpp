@@ -1117,16 +1117,7 @@ std::string MultiroomComponentState::active_speaker_group_id() {
     });
     if (persisted_active != groups.end()) return persisted_active->id;
 
-    auto available_outputs = known_outputs;
-    available_outputs.erase(
-        std::remove_if(available_outputs.begin(), available_outputs.end(), [](const auto& output) {
-            return !output_available_for_group(output);
-        }),
-        available_outputs.end());
-    const auto active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
-        return multiroom::speaker_group_matches_selection(group, available_outputs);
-    });
-    return active == groups.end() ? std::string{} : active->id;
+    return {};
 }
 
 void MultiroomComponentState::set_output_dropdown_visibility(const std::string& id, bool visible) {

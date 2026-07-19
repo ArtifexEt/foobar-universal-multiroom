@@ -81,8 +81,10 @@ bool exercise_speaker_groups() {
     ok &= expect(multiroom::speaker_group_matches_persisted_selection(
                      group, {"living-room-old", "kitchen"}, {}) &&
                  !multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old"}, {}) &&
+                 !multiroom::speaker_group_matches_persisted_selection(
                      group, {"living-room-old", "kitchen", "old-offline-selection"}, {}),
-                 "a queued persisted group should remain identifiable before discovery completes");
+                 "a queued group should require its full persisted membership before discovery completes");
     auto alternate_group = group;
     alternate_group.id = "alternate";
     alternate_group.output_ids = {"living-room-old", "office-offline"};

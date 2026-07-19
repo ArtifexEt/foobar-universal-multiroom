@@ -771,7 +771,8 @@ private:
         update_status_page();
         refresh_group_members_if_outputs_changed();
         if (!MultiroomComponentState::instance().refresh_in_progress() &&
-            !MultiroomComponentState::instance().pairing_in_progress()) {
+            !MultiroomComponentState::instance().pairing_in_progress() &&
+            !MultiroomComponentState::instance().control_in_progress()) {
             ::KillTimer(wnd_, kStatusRefreshTimer);
         }
         return TRUE;
