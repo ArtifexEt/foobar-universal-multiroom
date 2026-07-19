@@ -1136,6 +1136,14 @@ public:
         stream_uri_ = std::move(stream_uri);
     }
 
+    void set_active_rtsp_session_id(std::string rtsp_session_id) {
+        active_rtsp_session_id_ = std::move(rtsp_session_id);
+    }
+
+    bool matches_active_rtsp_session(const std::string& rtsp_session_id) const {
+        return !rtsp_session_id.empty() && rtsp_session_id == active_rtsp_session_id_;
+    }
+
     void send_audio_packet(const ScheduledPacket& packet, const void* frames, size_t bytes) {
         if (frames == nullptr && bytes != 0) {
             throw std::invalid_argument("RTP audio frame buffer cannot be null when bytes are present.");
@@ -1251,6 +1259,12 @@ public:
             };
 
         static_cast<void>(request("FLUSH", stream_uri_, std::move(headers)));
+        // The next PCM packet belongs to a fresh sender timeline. Force this
+        // connection to consume the transport's new shared group anchor.
+        ap2_sync_started_ = false;
+        ap2_sync_start_rtp_ = 0;
+        ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
+        ap2_first_audio_ = true;
     }
 
     AirPlayNegotiatedSession open_airplay2_transient(
@@ -1478,6 +1492,7 @@ private:
         dacp_id_.clear();
         sender_device_id_.clear();
         active_remote_.clear();
+        active_rtsp_session_id_.clear();
         ap2_audio_key_.clear();
         control_cipher_.reset();
         event_cipher_.reset();
@@ -2248,6 +2263,7 @@ private:
     std::string dacp_id_;
     std::string sender_device_id_;
     std::string active_remote_;
+    std::string active_rtsp_session_id_;
     AirPlay2Bytes ap2_audio_key_;
     std::unique_ptr<AirPlay2FrameCipher> control_cipher_;
     std::unique_ptr<AirPlay2FrameCipher> event_cipher_;
@@ -2377,6 +2393,7 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     try {
         auto credentials = load_pairing_credentials(output);
         auto session = connection->open_airplay2_transient(output, format, credentials);
+        connection->set_active_rtsp_session_id(session.rtsp_session_id);
         {
             std::lock_guard lock(pending_connections_mutex_);
             const auto pending = pending_connections_.find(output.id);
@@ -2434,6 +2451,9 @@ void AirPlayRtspControlClient::set_volume(
             return;
         }
         connection = it->second;
+        if (!connection->matches_active_rtsp_session(rtsp_session_id)) {
+            return;
+        }
     }
     connection->set_volume(rtsp_session_id, volume);
 }
