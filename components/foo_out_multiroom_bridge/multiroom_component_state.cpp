@@ -1081,10 +1081,13 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
             std::lock_guard lock(mutex_);
             cached_outputs_ = std::move(refreshed_outputs);
             active_output_names_ = std::move(active_output_names);
+            // Publish Open before clearing Connecting while holding the same
+            // lock used by playback_active(). A refresh must never observe a
+            // false/false gap after the AirPlay sessions are already ready.
+            playback_open_.store(true);
             playback_connecting_ = false;
             last_error_.clear();
         }
-        playback_open_.store(true);
         notify_multiroom_speaker_toolbar_changed();
         // Selection/volume callbacks may have run while the session handshake
         // was in progress. Reconcile once more now that reconnecting is safe.
