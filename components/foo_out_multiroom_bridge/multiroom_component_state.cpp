@@ -792,7 +792,9 @@ void MultiroomComponentState::control_update_worker() {
 
 bool MultiroomComponentState::refresh_in_progress() {
     std::lock_guard lock(mutex_);
-    return refresh_in_progress_;
+    // UI polling must remain alive while an explicit refresh is queued behind
+    // active playback, then follow the worker through its eventual scan.
+    return refresh_in_progress_ || refresh_deferred_until_stop_;
 }
 
 bool MultiroomComponentState::control_in_progress() {
