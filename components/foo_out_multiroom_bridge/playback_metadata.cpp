@@ -92,7 +92,7 @@ public:
         deferred_context_->owner = this;
     }
 
-    ~PlaybackMetadataBridge() override {
+    ~PlaybackMetadataBridge() {
         deferred_context_->owner = nullptr;
     }
 
