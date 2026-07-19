@@ -694,7 +694,7 @@ void MultiroomComponentState::control_update_worker() {
         bool control_ok = false;
 
         try {
-            if (!full_update && !metadata_update_requested) {
+            if (!full_update) {
                 // Receiver volume is a control-plane operation. It must not own
                 // the PCM transport lock while waiting for an RTSP round trip.
                 for (const auto& output : outputs_snapshot) {
@@ -703,8 +703,8 @@ void MultiroomComponentState::control_update_worker() {
                         output.id,
                         effective_remote_volume(output.volume, master_volume_snapshot));
                 }
-                control_ok = true;
-            } else {
+            }
+            if (full_update || metadata_update_requested) {
                 ensure_discovery_started();
                 std::lock_guard transport_lock(transport_mutex_);
                 // Stop may have completed after the snapshot was taken while this
@@ -737,8 +737,8 @@ void MultiroomComponentState::control_update_worker() {
                     outputs_snapshot = transport_.list_outputs();
                     preserve_user_output_state(outputs_snapshot, previous_outputs);
                 }
-                control_ok = true;
             }
+            control_ok = true;
         } catch (const std::exception& e) {
             control_error_narrow = e.what();
             control_error = widen_utf8(e.what());
