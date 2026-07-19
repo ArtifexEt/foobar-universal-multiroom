@@ -26,6 +26,11 @@ bool speaker_group_contains_persisted_output(
     const std::string& persisted_output_id,
     const std::vector<OutputDevice>& known_outputs);
 
+bool speaker_group_matches_persisted_selection(
+    const SpeakerGroup& group,
+    const std::vector<std::string>& persisted_selected_ids,
+    const std::vector<OutputDevice>& known_outputs);
+
 bool speaker_group_matches_selection(
     const SpeakerGroup& group,
     const std::vector<OutputDevice>& outputs);

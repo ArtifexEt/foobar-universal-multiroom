@@ -78,6 +78,11 @@ bool exercise_speaker_groups() {
     ok &= expect(multiroom::speaker_group_contains_persisted_output(group, "living-room", outputs) &&
                  !multiroom::speaker_group_contains_persisted_output(group, "old-offline-selection", outputs),
                  "group activation should select aliased members and clear unrelated persisted offline outputs");
+    ok &= expect(multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old", "kitchen"}, {}) &&
+                 !multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old", "kitchen", "old-offline-selection"}, {}),
+                 "a queued persisted group should remain identifiable before discovery completes");
     ok &= expect(multiroom::speaker_group_matches_selection(group, outputs),
                  "speaker group should match the exact selected output set");
     outputs.back().selected = true;

@@ -1051,6 +1051,7 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
 
         std::vector<multiroom::OutputDevice> changed_outputs;
         std::vector<multiroom::OutputDevice> known_outputs;
+        bool no_group_members_available = false;
         {
             std::lock_guard lock(mutex_);
             auto available_outputs = cached_outputs_;
@@ -1060,9 +1061,7 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
                 }),
                 available_outputs.end());
             const auto resolved_ids = multiroom::resolve_speaker_group_output_ids(*group, available_outputs);
-            if (resolved_ids.empty()) {
-                throw std::runtime_error("None of this group's speakers are currently available.");
-            }
+            no_group_members_available = resolved_ids.empty();
             for (auto& output : cached_outputs_) {
                 const bool selected = std::find(resolved_ids.begin(), resolved_ids.end(), output.id) != resolved_ids.end();
                 if (output.selected != selected) {
@@ -1078,6 +1077,7 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
         for (const auto& output : changed_outputs) update_stored_output_state(output);
         notify_multiroom_speaker_toolbar_changed();
         schedule_control_update();
+        if (no_group_members_available && !refresh_in_progress()) refresh_outputs();
         return true;
     } catch (const std::exception& e) {
         std::lock_guard lock(mutex_);
@@ -1088,8 +1088,12 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
 
 std::string MultiroomComponentState::active_speaker_group_id() {
     const auto groups = load_speaker_groups();
-    std::lock_guard lock(mutex_);
-    auto available_outputs = cached_outputs_;
+    std::vector<multiroom::OutputDevice> known_outputs;
+    {
+        std::lock_guard lock(mutex_);
+        known_outputs = cached_outputs_;
+    }
+    auto available_outputs = known_outputs;
     available_outputs.erase(
         std::remove_if(available_outputs.begin(), available_outputs.end(), [](const auto& output) {
             return !output_available_for_group(output);
@@ -1098,7 +1102,17 @@ std::string MultiroomComponentState::active_speaker_group_id() {
     const auto active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
         return multiroom::speaker_group_matches_selection(group, available_outputs);
     });
-    return active == groups.end() ? std::string{} : active->id;
+    if (active != groups.end()) return active->id;
+
+    std::vector<std::string> persisted_selected_ids;
+    for (const auto& state : load_output_state()) {
+        if (state.selected) persisted_selected_ids.push_back(state.output_id);
+    }
+    const auto persisted_active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
+        return multiroom::speaker_group_matches_persisted_selection(
+            group, persisted_selected_ids, known_outputs);
+    });
+    return persisted_active == groups.end() ? std::string{} : persisted_active->id;
 }
 
 void MultiroomComponentState::set_output_dropdown_visibility(const std::string& id, bool visible) {

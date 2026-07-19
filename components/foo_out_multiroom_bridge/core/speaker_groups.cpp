@@ -154,6 +154,27 @@ bool speaker_group_contains_persisted_output(
     });
 }
 
+bool speaker_group_matches_persisted_selection(
+    const SpeakerGroup& group,
+    const std::vector<std::string>& persisted_selected_ids,
+    const std::vector<OutputDevice>& known_outputs) {
+    if (persisted_selected_ids.empty()) return false;
+    const bool no_extra_outputs = std::all_of(
+        persisted_selected_ids.begin(), persisted_selected_ids.end(), [&](const auto& persisted_id) {
+            return speaker_group_contains_persisted_output(group, persisted_id, known_outputs);
+        });
+    if (!no_extra_outputs) return false;
+
+    return std::all_of(group.output_ids.begin(), group.output_ids.end(), [&](const auto& group_id) {
+        return std::any_of(persisted_selected_ids.begin(), persisted_selected_ids.end(), [&](const auto& persisted_id) {
+            if (persisted_id == group_id) return true;
+            return std::any_of(known_outputs.begin(), known_outputs.end(), [&](const auto& output) {
+                return output_matches_id(output, persisted_id) && output_matches_id(output, group_id);
+            });
+        });
+    });
+}
+
 bool speaker_group_matches_selection(
     const SpeakerGroup& group,
     const std::vector<OutputDevice>& outputs) {
