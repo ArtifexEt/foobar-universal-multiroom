@@ -26,6 +26,7 @@ public:
     void set_remote_command_handler(AirPlayRemoteCommandHandler handler);
     void set_enabled_outputs(const std::vector<std::string>& ids) override;
     void set_output_volume(const std::string& id, int volume) override;
+    void set_session_volume(const std::string& id, int volume);
     void set_output_offset_ms(const std::string& id, int offset_ms) override;
     void set_playback_metadata(const PlaybackMetadata& metadata) override;
     void clear_playback_metadata() override;
@@ -56,6 +57,8 @@ private:
     PcmFormat stream_format_;
     bool discovery_active_ = false;
     bool stream_open_ = false;
+    bool group_sync_anchor_valid_ = false;
+    uint64_t group_sync_start_rtp_ = 0;
     std::optional<PlaybackMetadata> playback_metadata_;
 };
 

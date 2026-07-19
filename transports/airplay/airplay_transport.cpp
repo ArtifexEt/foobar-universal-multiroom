@@ -1,4 +1,5 @@
 #include "airplay_transport.h"
+#include "airplay_timing.h"
 
 #include <algorithm>
 #include <chrono>
@@ -65,6 +66,10 @@ void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
     sessions_.set_volume(resolved_id, volume);
 }
 
+void AirPlayTransport::set_session_volume(const std::string& id, int volume) {
+    sessions_.set_volume(id, std::clamp(volume, 0, 100));
+}
+
 void AirPlayTransport::set_output_offset_ms(const std::string& id, int offset_ms) {
     sync_discovered_outputs();
     registry_.set_output_offset_ms(resolve_output_id(id), offset_ms);
@@ -87,6 +92,8 @@ void AirPlayTransport::open_stream(const PcmFormat& format) {
 
     stream_format_ = format;
     stream_open_ = true;
+    group_sync_anchor_valid_ = false;
+    group_sync_start_rtp_ = 0;
 }
 
 void AirPlayTransport::connect_selected_outputs() {
@@ -139,9 +146,24 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         throw std::runtime_error("No selected AirPlay output has a ready session.");
     }
 
+    if (!group_sync_anchor_valid_) {
+        const auto now_rtp = ntp_to_rtp_timestamp(
+            current_ntp_timestamp(),
+            stream_format_.sample_rate);
+        group_sync_start_rtp_ = now_rtp - stream_timestamp;
+        group_sync_anchor_valid_ = true;
+    }
+
     const auto packets = scheduler_.schedule(
         outputs,
-        {stream_timestamp, bytes, stream_format_.sample_rate, 250});
+        {
+            stream_timestamp,
+            bytes,
+            stream_format_.sample_rate,
+            250,
+            group_sync_start_rtp_,
+            group_sync_anchor_valid_,
+        });
     for (const auto& packet : packets) {
         sessions_.enqueue(packet, frames, bytes);
     }
@@ -149,12 +171,16 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
 
 void AirPlayTransport::flush() {
     sessions_.flush();
+    group_sync_anchor_valid_ = false;
+    group_sync_start_rtp_ = 0;
 }
 
 void AirPlayTransport::stop() {
     sessions_.clear_metadata();
     sessions_.stop();
     stream_open_ = false;
+    group_sync_anchor_valid_ = false;
+    group_sync_start_rtp_ = 0;
 }
 
 void AirPlayTransport::add_discovered_output(OutputDevice device) {

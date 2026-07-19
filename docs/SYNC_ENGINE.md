@@ -24,6 +24,14 @@ network speakers at the same time.
 - Keeps speaker buffers filled without letting one slow device stall the whole
   group forever.
 
+`GroupClockAnchor`
+
+- Captured once when the first PCM packet of a stream is scheduled.
+- Shared by every selected receiver so equal presentation timestamps resolve
+  to the same NTP wall-clock instant.
+- Recreated after flush or a new stream; adding a receiver mid-stream keeps the
+  existing group anchor.
+
 `OffsetModel`
 
 - Combines measured latency with user offsets.
@@ -46,4 +54,3 @@ network speakers at the same time.
 - Room/group presets.
 - Multiple protocol families in one synchronized group only where their timing
   primitives are strong enough.
-

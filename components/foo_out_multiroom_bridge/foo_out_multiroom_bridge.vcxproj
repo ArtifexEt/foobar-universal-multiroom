@@ -149,9 +149,11 @@
     <ClInclude Include="speaker_selector_popup.h" />
     <ClInclude Include="speaker_toolbar.h" />
     <ClInclude Include="stdafx.h" />
+    <ClInclude Include="core\volume_control.h" />
     <ClInclude Include="..\..\transports\airplay\airplay2_external_crypto.h" />
     <ClInclude Include="..\..\transports\airplay\airplay2_session.h" />
     <ClInclude Include="..\..\transports\airplay\airplay_rtsp.h" />
+    <ClInclude Include="..\..\transports\airplay\airplay_timing.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="preferences.rc" />

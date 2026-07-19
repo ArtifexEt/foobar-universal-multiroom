@@ -33,9 +33,9 @@ without changing the foobar UI.
   transport and never refreshes discovery, takes the PCM transport lock, or
   reconciles sessions. A requested discovery refresh during playback is queued
   until the stream stops.
-- `Universal Multiroom Audio Bridge...` is available as a normal foobar command and can be
-  placed in the Buttons toolbar to open the compact multi-speaker selector.
-- Foobar2000 2.x also receives a native `Universal Multiroom Audio Bridge` toolbar dropdown. It shows the
+- `Playback > Select Wireless Speakers...` is available as a normal foobar command and can be
+  placed in the Buttons toolbar through `Customize Buttons`.
+- Foobar2000 2.x also receives a native `Wireless Speakers` toolbar dropdown. It shows the
   current group, exposes quick speaker toggles, and opens the full picker.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
@@ -103,14 +103,14 @@ without changing the foobar UI.
 ## Adding the speaker selector to foobar2000
 
 - In a Buttons toolbar, open its configuration and add
-  `Playback > Universal Multiroom Audio Bridge...` for a button that opens the picker.
+  `Playback > Select Wireless Speakers...` for a button that opens the picker.
 - For the live destination shown in the toolbar row, right-click the toolbar
   header, add foobar2000's `Toolbar Dropdown`, then select
-  `Universal Multiroom Audio Bridge` as
+  `Wireless Speakers` as
   its data source. It shows `Idle`, `Connecting...`, or the receiver(s) whose
   AirPlay sessions are actually ready.
 - In Default UI Layout Editing Mode, the standalone playback-information
-  element is named `Universal Multiroom Audio Bridge` and can be placed next to playback
+  element is named `Wireless Speakers` and can be placed next to playback
   controls, the seekbar, or volume.
 
 The command, native dropdown, and standalone element use the same picker and

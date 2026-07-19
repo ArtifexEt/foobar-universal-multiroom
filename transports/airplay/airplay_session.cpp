@@ -181,16 +181,21 @@ void AirPlaySessionManager::close_missing_outputs(const std::vector<OutputDevice
 }
 
 void AirPlaySessionManager::set_volume(const std::string& output_id, int volume) {
-    std::lock_guard lock(mutex_);
-
-    const auto it = sessions_.find(output_id);
-    if (it == sessions_.end() || it->second.phase != AirPlaySessionPhase::Ready || !it->second.open) {
-        return;
+    std::string session_output_id;
+    std::string rtsp_session_id;
+    {
+        std::lock_guard lock(mutex_);
+        const auto it = sessions_.find(output_id);
+        if (it == sessions_.end() || it->second.phase != AirPlaySessionPhase::Ready || !it->second.open) {
+            return;
+        }
+        session_output_id = it->second.output_id;
+        rtsp_session_id = it->second.rtsp_session_id;
     }
 
     control_client_->set_volume(
-        it->second.output_id,
-        it->second.rtsp_session_id,
+        session_output_id,
+        rtsp_session_id,
         volume);
 }
 

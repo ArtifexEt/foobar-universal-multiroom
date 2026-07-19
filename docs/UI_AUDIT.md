@@ -10,14 +10,15 @@ Apple Music. Preferences and protocol diagnostics are intentionally secondary.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Playback command | Complete | `Playback > Universal Multiroom Audio Bridge...` opens the full picker and can be assigned to foobar's Buttons toolbar. |
-| Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `Universal Multiroom Audio Bridge`, with an active-session label, quick toggles, and an entry into the full picker. Add it to the toolbar header through foobar's `Toolbar Dropdown` control and choose this data source. |
-| Dockable compact control | Complete | Default UI playback-information element named `Universal Multiroom Audio Bridge`, with a scalable audio glyph, active destination (`Idle`, `Connecting...`, or ready receivers), keyboard activation, focus state, and light/dark colors. |
+| Playback command | Complete | `Playback > Select Wireless Speakers...` opens the full picker. In a Buttons toolbar, use `Customize Buttons`, then choose `Playback > Select Wireless Speakers...`. |
+| Native toolbar dropdown | Complete | Foobar2000 2.x `toolbarDropDown` service named `Wireless Speakers`, with an active-session label, quick toggles, and an entry into the full picker. Add a `Toolbar Dropdown` control to the toolbar row and select `Wireless Speakers` as its data source. |
+| Dockable compact control | Complete | Default UI playback-information element named `Wireless Speakers`, with a scalable audio glyph, active destination (`Idle`, `Connecting...`, or ready receivers), keyboard activation, focus state, and light/dark colors. |
 | Speaker popup | Complete for normal selection | Apple Music-style hierarchy with a clean centered product title, `Speakers & TVs` section, flat device rows, speaker glyphs, trailing check indicators, custom accent sliders, percentages, conditional PIN pairing, rounded popover clipping, refresh footer, scrolling, theme adaptation, and automatic dismissal. Parent and child surfaces are fully invalidated after scroll/control rebuilds so stale or blank fragments are not retained. |
 | Dropdown visibility | Complete | Every discovered speaker has a persistent checkbox in Preferences. Clearing it removes only that speaker from the toolbar dropdown; selection and playback state are unchanged, and legacy saved state defaults to visible. |
 | Persisted selection and volume | Complete | Canonical speaker IDs and aliases retain selection/volume across discovery identity promotion. |
-| Live per-speaker volume | Fixed in this pass | Thumb tracking updates the UI locally; the final value is persisted and sent through a coalesced volume-only path. It no longer runs output selection, session connection, and all-device volume work for every pixel of a drag. |
-| Master volume | Complete | Foobar's main volume remains a group multiplier and now shares the coalesced volume-only path. |
+| Live per-speaker volume | Fixed in this pass | Thumb tracking updates the UI locally; the final value is persisted and sent through a coalesced, control-plane-only path. Synchronous RTSP volume requests no longer own either the PCM transport mutex or the session mutex while waiting for the receiver. |
+| Master volume and signal quality | Complete | PCM is sent at full scale. Foobar's main volume remains a receiver-side group multiplier: effective receiver volume is `master × speaker`, clamped to 0–100%. |
+| Group timing | Fixed in this pass | Every receiver now uses one group-wide NTP/RTP clock anchor. Per-speaker offsets alter presentation time without creating a separate wall-clock origin for each session. |
 | Receiver playback controls | Complete | Encrypted AirPlay events for play, pause, toggle, stop, next, and previous are applied to foobar on its main thread; duplicate group events are suppressed. |
 | Non-blocking UI/startup | Fixed in this pass | Popup/preferences discovery starts on the refresh worker. AirPlay discovery, pair verification, session SETUP, metadata setup, receiver connection, and seek/flush network work run on workers instead of blocking `output::open()` or a foobar UI callback. |
 | Current playback destination | Fixed in this pass | Toolbar labels are derived from ready/open AirPlay sessions rather than the persisted speaker checkboxes, and are refreshed on connect, reconfiguration, failure, and stop. |
@@ -34,7 +35,9 @@ The corrected split is:
 
 - speaker selection or discovery changes use the full control update;
 - volume changes use only the affected output IDs;
-- repeated values are coalesced before the worker acquires the transport lock;
+- repeated values are coalesced before the worker sends receiver control;
+- volume-only RTSP waits do not acquire the PCM transport lock and do not hold
+  the session-state mutex used by packet delivery;
 - a mouse drag sends its final value after `TB_ENDTRACK` instead of every
   intermediate pixel;
 - a late UI value is preserved if it arrives while a control update is in
@@ -98,8 +101,6 @@ These are product gaps, not fallbacks for broken AirPlay behavior:
 8. Add optional compact now-playing context to the local speaker popup only if
    it does not displace routing controls. Protocol delivery of current metadata
    and artwork to receivers is implemented independently of this UI choice.
-9. The foobar SDK exposes a dropdown data source and addable Default UI element,
-   but not a component-owned command that inserts itself into the user's layout.
-   Validate the documented `Toolbar Dropdown > Universal Multiroom Audio Bridge`
-   flow against the
-   exact Default UI version used for packaged-artifact testing.
+9. Validate both documented toolbar flows (`Customize Buttons > Playback >
+   Select Wireless Speakers...` and `Toolbar Dropdown > Wireless Speakers`)
+   against the exact Default UI version used for packaged-artifact testing.
