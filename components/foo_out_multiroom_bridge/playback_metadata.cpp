@@ -201,7 +201,7 @@ private:
     bool active_ = false;
 };
 
-class PlaybackMetadataLifecycle final : public initquit {
+class PlaybackMetadataLifecycle : public initquit {
 public:
     void on_init() override {
         bridge_ = std::make_unique<PlaybackMetadataBridge>();
