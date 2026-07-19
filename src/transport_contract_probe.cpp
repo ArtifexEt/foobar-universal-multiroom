@@ -83,6 +83,14 @@ bool exercise_speaker_groups() {
                  !multiroom::speaker_group_matches_persisted_selection(
                      group, {"living-room-old", "kitchen", "old-offline-selection"}, {}),
                  "a queued persisted group should remain identifiable before discovery completes");
+    auto alternate_group = group;
+    alternate_group.id = "alternate";
+    alternate_group.output_ids = {"living-room-old", "office-offline"};
+    ok &= expect(!multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old", "office-offline"}, outputs) &&
+                 multiroom::speaker_group_matches_persisted_selection(
+                     alternate_group, {"living-room-old", "office-offline"}, outputs),
+                 "persisted offline members should disambiguate groups with the same available subset");
     ok &= expect(multiroom::speaker_group_matches_selection(group, outputs),
                  "speaker group should match the exact selected output set");
     outputs.back().selected = true;

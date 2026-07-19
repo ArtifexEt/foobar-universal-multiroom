@@ -999,6 +999,17 @@ std::string MultiroomComponentState::save_speaker_group(
     if (group.id.empty()) group.id = new_speaker_group_id();
 
     {
+        std::lock_guard lock(mutex_);
+        const auto unsupported = std::find_if(cached_outputs_.begin(), cached_outputs_.end(), [&](const auto& output) {
+            return !output.supports_airplay2 &&
+                multiroom::speaker_group_contains_persisted_output(group, output.id, cached_outputs_);
+        });
+        if (unsupported != cached_outputs_.end()) {
+            throw std::invalid_argument("AirPlay 2 is required for group member: " + unsupported->id);
+        }
+    }
+
+    {
         std::lock_guard lock(cfg_speaker_groups_mutex);
         auto groups = multiroom::deserialize_speaker_groups(cfg_speaker_groups.get().c_str());
         const auto duplicate_name = std::find_if(groups.begin(), groups.end(), [&](const auto& existing) {
@@ -1093,6 +1104,16 @@ std::string MultiroomComponentState::active_speaker_group_id() {
         std::lock_guard lock(mutex_);
         known_outputs = cached_outputs_;
     }
+    std::vector<std::string> persisted_selected_ids;
+    for (const auto& state : load_output_state()) {
+        if (state.selected) persisted_selected_ids.push_back(state.output_id);
+    }
+    const auto persisted_active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
+        return multiroom::speaker_group_matches_persisted_selection(
+            group, persisted_selected_ids, known_outputs);
+    });
+    if (persisted_active != groups.end()) return persisted_active->id;
+
     auto available_outputs = known_outputs;
     available_outputs.erase(
         std::remove_if(available_outputs.begin(), available_outputs.end(), [](const auto& output) {
@@ -1102,17 +1123,7 @@ std::string MultiroomComponentState::active_speaker_group_id() {
     const auto active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
         return multiroom::speaker_group_matches_selection(group, available_outputs);
     });
-    if (active != groups.end()) return active->id;
-
-    std::vector<std::string> persisted_selected_ids;
-    for (const auto& state : load_output_state()) {
-        if (state.selected) persisted_selected_ids.push_back(state.output_id);
-    }
-    const auto persisted_active = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
-        return multiroom::speaker_group_matches_persisted_selection(
-            group, persisted_selected_ids, known_outputs);
-    });
-    return persisted_active == groups.end() ? std::string{} : persisted_active->id;
+    return active == groups.end() ? std::string{} : active->id;
 }
 
 void MultiroomComponentState::set_output_dropdown_visibility(const std::string& id, bool visible) {
