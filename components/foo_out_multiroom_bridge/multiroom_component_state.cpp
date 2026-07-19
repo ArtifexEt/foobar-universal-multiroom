@@ -474,6 +474,20 @@ void MultiroomComponentState::refresh_outputs_worker() {
         try {
             ensure_discovery_started();
             std::lock_guard transport_lock(transport_mutex_);
+            {
+                std::lock_guard lock(mutex_);
+                // Recheck after acquiring the transport lock. Playback may
+                // have started after refresh_outputs() accepted this worker,
+                // or between two coalesced refresh iterations. If discovery
+                // owns the lock first, setup waits; if setup owns it first,
+                // discovery observes Connecting/Open here and is deferred.
+                if (playback_open_.load() || playback_connecting_) {
+                    refresh_deferred_until_stop_ = true;
+                    refresh_requested_ = false;
+                    refresh_in_progress_ = false;
+                    return;
+                }
+            }
             transport_.refresh_discovery();
             refreshed_outputs = transport_.list_outputs();
             apply_stored_output_state(refreshed_outputs);
