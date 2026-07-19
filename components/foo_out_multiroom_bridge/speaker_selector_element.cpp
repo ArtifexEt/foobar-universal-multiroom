@@ -6,7 +6,9 @@
 #include <libPPUI/win32_op.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
+#include <iterator>
 #include <sstream>
 
 namespace {
@@ -22,11 +24,11 @@ static constexpr UINT_PTR kPairCommand = 32003;
 static constexpr UINT_PTR kPairPinLabelId = 32004;
 static constexpr UINT_PTR kVolumeLabelBase = 33000;
 static constexpr UINT_PTR kRefreshTimer = 34000;
-static constexpr int kPopupWidth = 372;
-static constexpr int kPopupPadding = 12;
-static constexpr int kHeaderHeight = 34;
-static constexpr int kRowHeight = 48;
-static constexpr int kFooterHeight = 42;
+static constexpr int kPopupWidth = 396;
+static constexpr int kPopupPadding = 16;
+static constexpr int kHeaderHeight = 62;
+static constexpr int kRowHeight = 68;
+static constexpr int kFooterHeight = 46;
 static constexpr size_t kMaxVisibleRows = 7;
 static constexpr int kToolbarMinHeight = 22;
 static constexpr int kToolbarMaxHeight = 34;
@@ -109,10 +111,50 @@ COLORREF blend_color(COLORREF from, COLORREF to, int amount_percent) {
         mix(GetBValue(from), GetBValue(to)));
 }
 
+bool color_is_dark(COLORREF color) {
+    return GetRValue(color) * 299 + GetGValue(color) * 587 + GetBValue(color) * 114 < 128000;
+}
+
+COLORREF airplay_accent(COLORREF background) {
+    return color_is_dark(background) ? RGB(10, 132, 255) : RGB(0, 122, 255);
+}
+
+void draw_airplay_audio_glyph(HDC hdc, CPoint center, COLORREF color, int radius) {
+    CDCHandle dc(hdc);
+    CPen pen;
+    WIN32_OP_D(pen.CreatePen(PS_SOLID, (std::max)(1, radius / 5), color) != nullptr);
+    SelectObjectScope pen_scope(dc, pen);
+    SelectObjectScope brush_scope(dc, GetStockObject(NULL_BRUSH));
+
+    for (int ring = 1; ring <= 3; ++ring) {
+        const double ring_radius = static_cast<double>(radius) * ring / 3.0;
+        POINT points[17] = {};
+        for (size_t point = 0; point < std::size(points); ++point) {
+            const double angle = (205.0 + (130.0 * point / (std::size(points) - 1))) * 3.141592653589793 / 180.0;
+            points[point].x = center.x + static_cast<LONG>(std::lround(std::cos(angle) * ring_radius));
+            points[point].y = center.y + static_cast<LONG>(std::lround(std::sin(angle) * ring_radius));
+        }
+        WIN32_OP_D(dc.Polyline(points, static_cast<int>(std::size(points))));
+    }
+
+    CBrush triangle_brush;
+    WIN32_OP_D(triangle_brush.CreateSolidBrush(color) != nullptr);
+    SelectObjectScope triangle_scope(dc, triangle_brush);
+    POINT triangle[] = {
+        {center.x, center.y - 1},
+        {center.x - radius / 2, center.y + radius},
+        {center.x + radius / 2, center.y + radius},
+    };
+    WIN32_OP_D(dc.Polygon(triangle, static_cast<int>(std::size(triangle))));
+}
+
 class SpeakerPickerPopup
     : public CWindowImpl<SpeakerPickerPopup> {
 public:
-    DECLARE_WND_CLASS_EX(TEXT("{BB3569C2-8F93-445E-9681-E32B38CFCE62}"), CS_VREDRAW | CS_HREDRAW, -1);
+    DECLARE_WND_CLASS_EX(
+        TEXT("{BB3569C2-8F93-445E-9681-E32B38CFCE62}"),
+        CS_VREDRAW | CS_HREDRAW | CS_DROPSHADOW,
+        -1);
 
     SpeakerPickerPopup(HWND owner, ui_element_instance_callback_ptr callback)
         : owner_(owner)
@@ -158,6 +200,8 @@ public:
         MSG_WM_ERASEBKGND(on_erase_background)
         MSG_WM_PAINT(on_paint)
         MESSAGE_HANDLER(WM_COMMAND, on_command)
+        MESSAGE_HANDLER(WM_DRAWITEM, on_draw_item)
+        MESSAGE_HANDLER(WM_NOTIFY, on_notify)
         MESSAGE_HANDLER(WM_HSCROLL, on_scroll)
         MESSAGE_HANDLER(WM_VSCROLL, on_vertical_scroll)
         MESSAGE_HANDLER(WM_MOUSEWHEEL, on_mouse_wheel)
@@ -172,6 +216,12 @@ public:
 
 private:
     LRESULT on_create(UINT, WPARAM, LPARAM, BOOL&) {
+        LOGFONTW title_font = {};
+        if (::GetObjectW(popup_font(), sizeof(title_font), &title_font) == sizeof(title_font)) {
+            title_font.lfWeight = FW_SEMIBOLD;
+            title_font.lfHeight = title_font.lfHeight < 0 ? title_font.lfHeight - 3 : title_font.lfHeight + 3;
+            WIN32_OP_D(title_font_.CreateFontIndirect(&title_font) != nullptr);
+        }
         rebuild_controls();
         return 0;
     }
@@ -194,31 +244,161 @@ private:
         dc.SetTextColor(text_color());
         SelectObjectScope font_scope(dc, popup_font());
 
-        CRect header(kPopupPadding, 8, rc.right - kPopupPadding, kHeaderHeight);
-        WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &header, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX) > 0);
+        CRect title(kPopupPadding, 8, rc.right - kPopupPadding, 34);
+        SelectObjectScope title_scope(dc, title_font_.m_hFont != nullptr ? title_font_.m_hFont : popup_font());
+        WIN32_OP_D(dc.DrawTextW(L"AirPlay", -1, &title, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX) > 0);
+
+        SelectObjectScope body_font_scope(dc, popup_font());
+        dc.SetTextColor(secondary_text_color());
+        const auto subtitle = selection_summary();
+        CRect subtitle_rect(kPopupPadding, 32, rc.right - kPopupPadding - 76, 55);
+        WIN32_OP_D(dc.DrawTextW(subtitle.c_str(), -1, &subtitle_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+
+        dc.SetTextColor(text_color());
 
         CPen divider;
         WIN32_OP_D(divider.CreatePen(PS_SOLID, 1, subtle_color()) != nullptr);
         SelectObjectScope pen_scope(dc, divider);
-        dc.MoveTo(kPopupPadding, kHeaderHeight);
-        dc.LineTo(rc.right - kPopupPadding, kHeaderHeight);
+        dc.MoveTo(0, kHeaderHeight - 1);
+        dc.LineTo(rc.right, kHeaderHeight - 1);
 
-        int row_top = kHeaderHeight + 6;
+        int row_top = kHeaderHeight + 8;
         const auto row_end = (std::min)(outputs_.size(), first_visible_row_ + visible_row_count());
         for (size_t index = first_visible_row_; index < row_end; ++index) {
-            CRect row(kPopupPadding, row_top, rc.right - kPopupPadding, row_top + kRowHeight - 8);
+            CRect row(kPopupPadding, row_top, rc.right - kPopupPadding, row_top + kRowHeight - 6);
             CBrush row_brush;
             WIN32_OP_D(row_brush.CreateSolidBrush(row_color(outputs_[index].selected)) != nullptr);
-            WIN32_OP_D(dc.FillRect(&row, row_brush));
-
-            CPen row_pen;
-            WIN32_OP_D(row_pen.CreatePen(PS_SOLID, 1, subtle_color()) != nullptr);
-            SelectObjectScope row_pen_scope(dc, row_pen);
-            SelectObjectScope row_brush_scope(dc, GetStockObject(NULL_BRUSH));
-            dc.RoundRect(&row, CPoint(8, 8));
+            SelectObjectScope row_brush_scope(dc, row_brush);
+            SelectObjectScope row_pen_scope(dc, GetStockObject(NULL_PEN));
+            dc.RoundRect(&row, CPoint(12, 12));
 
             row_top += kRowHeight;
         }
+
+        CPen footer_divider;
+        WIN32_OP_D(footer_divider.CreatePen(PS_SOLID, 1, subtle_color()) != nullptr);
+        SelectObjectScope footer_pen_scope(dc, footer_divider);
+        const int footer_top = popup_height() - kFooterHeight;
+        dc.MoveTo(0, footer_top);
+        dc.LineTo(rc.right, footer_top);
+    }
+
+    LRESULT on_draw_item(UINT, WPARAM, LPARAM lp, BOOL&) {
+        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+        if (item == nullptr || item->CtlType != ODT_BUTTON) return FALSE;
+
+        CDCHandle dc(item->hDC);
+        CRect rc(item->rcItem);
+        dc.SetBkMode(TRANSPARENT);
+        SelectObjectScope font_scope(dc, popup_font());
+
+        if (item->CtlID >= kSpeakerCheckBase && item->CtlID < kSpeakerCheckBase + outputs_.size()) {
+            const auto index = static_cast<size_t>(item->CtlID - kSpeakerCheckBase);
+            const auto& output = outputs_[index];
+            const bool enabled = (item->itemState & ODS_DISABLED) == 0;
+            const auto foreground = enabled ? text_color() : secondary_text_color();
+
+            CBrush background;
+            WIN32_OP_D(background.CreateSolidBrush(row_color(output.selected)) != nullptr);
+            WIN32_OP_D(dc.FillRect(&rc, background));
+
+            const int center_y = rc.CenterPoint().y;
+            CRect indicator(rc.left + 3, center_y - 9, rc.left + 21, center_y + 9);
+            CPen ring;
+            WIN32_OP_D(ring.CreatePen(PS_SOLID, 2, output.selected ? accent_color() : secondary_text_color()) != nullptr);
+            SelectObjectScope ring_scope(dc, ring);
+            CBrush indicator_brush;
+            WIN32_OP_D(indicator_brush.CreateSolidBrush(output.selected ? accent_color() : row_color(false)) != nullptr);
+            SelectObjectScope indicator_scope(dc, indicator_brush);
+            dc.Ellipse(&indicator);
+
+            if (output.selected) {
+                CPen check;
+                WIN32_OP_D(check.CreatePen(PS_SOLID, 2, RGB(255, 255, 255)) != nullptr);
+                SelectObjectScope check_scope(dc, check);
+                dc.MoveTo(indicator.left + 5, center_y);
+                dc.LineTo(indicator.left + 8, center_y + 3);
+                dc.LineTo(indicator.left + 14, center_y - 4);
+            }
+
+            const auto name = widen_utf8(output.name.empty() ? output.id : output.name);
+            dc.SetTextColor(foreground);
+            CRect name_rect(rc.left + 30, rc.top, rc.right - 4, rc.bottom);
+            WIN32_OP_D(dc.DrawTextW(name.c_str(), -1, &name_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+        } else if (item->CtlID == kRefreshCommand || item->CtlID == kPairCommand) {
+            wchar_t text[64] = {};
+            ::GetWindowTextW(item->hwndItem, text, static_cast<int>(std::size(text)));
+            const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+            CBrush button_brush;
+            WIN32_OP_D(button_brush.CreateSolidBrush(
+                pressed ? blend_color(background_color(), accent_color(), 25) : blend_color(background_color(), text_color(), 8)) != nullptr);
+            SelectObjectScope button_scope(dc, button_brush);
+            SelectObjectScope pen_scope(dc, GetStockObject(NULL_PEN));
+            dc.RoundRect(&rc, CPoint(12, 12));
+            dc.SetTextColor(item->CtlID == kRefreshCommand ? accent_color() : text_color());
+            WIN32_OP_D(dc.DrawTextW(text, -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+        }
+
+        if ((item->itemState & ODS_FOCUS) != 0) {
+            CRect focus = rc;
+            focus.DeflateRect(2, 2);
+            dc.DrawFocusRect(&focus);
+        }
+        return TRUE;
+    }
+
+    LRESULT on_notify(UINT, WPARAM, LPARAM lp, BOOL&) {
+        auto* header = reinterpret_cast<NMHDR*>(lp);
+        if (header == nullptr || header->code != NM_CUSTOMDRAW) return 0;
+        if (header->idFrom < kSpeakerVolumeBase || header->idFrom >= kSpeakerVolumeBase + outputs_.size()) return 0;
+
+        auto* custom = reinterpret_cast<NMCUSTOMDRAW*>(lp);
+        const auto index = static_cast<size_t>(header->idFrom - kSpeakerVolumeBase);
+        if (custom->dwDrawStage == CDDS_PREPAINT) {
+            CBrush background;
+            WIN32_OP_D(background.CreateSolidBrush(row_color(outputs_[index].selected)) != nullptr);
+            ::FillRect(custom->hdc, &custom->rc, background);
+            return CDRF_NOTIFYITEMDRAW;
+        }
+        if (custom->dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
+
+        CDCHandle dc(custom->hdc);
+        if (custom->dwItemSpec == TBCD_CHANNEL) {
+            CRect channel;
+            ::SendMessageW(header->hwndFrom, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+            channel.top = channel.CenterPoint().y - 2;
+            channel.bottom = channel.top + 4;
+
+            CBrush track;
+            WIN32_OP_D(track.CreateSolidBrush(blend_color(background_color(), text_color(), 18)) != nullptr);
+            SelectObjectScope track_scope(dc, track);
+            SelectObjectScope pen_scope(dc, GetStockObject(NULL_PEN));
+            dc.RoundRect(&channel, CPoint(4, 4));
+
+            const int minimum = static_cast<int>(::SendMessageW(header->hwndFrom, TBM_GETRANGEMIN, 0, 0));
+            const int maximum = static_cast<int>(::SendMessageW(header->hwndFrom, TBM_GETRANGEMAX, 0, 0));
+            const int position = static_cast<int>(::SendMessageW(header->hwndFrom, TBM_GETPOS, 0, 0));
+            CRect active = channel;
+            active.right = active.left + MulDiv(channel.Width(), position - minimum, (std::max)(1, maximum - minimum));
+            CBrush active_brush;
+            WIN32_OP_D(active_brush.CreateSolidBrush(accent_color()) != nullptr);
+            SelectObjectScope active_scope(dc, active_brush);
+            dc.RoundRect(&active, CPoint(4, 4));
+            return CDRF_SKIPDEFAULT;
+        }
+        if (custom->dwItemSpec == TBCD_THUMB) {
+            CRect thumb(custom->rc);
+            thumb.DeflateRect(2, 2);
+            CBrush thumb_brush;
+            WIN32_OP_D(thumb_brush.CreateSolidBrush(accent_color()) != nullptr);
+            SelectObjectScope brush_scope(dc, thumb_brush);
+            CPen thumb_pen;
+            WIN32_OP_D(thumb_pen.CreatePen(PS_SOLID, 1, blend_color(accent_color(), RGB(255, 255, 255), 35)) != nullptr);
+            SelectObjectScope pen_scope(dc, thumb_pen);
+            dc.Ellipse(&thumb);
+            return CDRF_SKIPDEFAULT;
+        }
+        return CDRF_SKIPDEFAULT;
     }
 
     LRESULT on_command(UINT, WPARAM wp, LPARAM, BOOL&) {
@@ -260,6 +440,11 @@ private:
     LRESULT on_timer(UINT, WPARAM wp, LPARAM, BOOL&) {
         if (wp != kRefreshTimer) return 0;
 
+        // Discovery/control can complete while the user is dragging a thumb.
+        // Rebuilding child windows at that point would destroy the active
+        // trackbar and discard its not-yet-committed local position.
+        if (volume_drag_active_) return 0;
+
         const auto outputs = MultiroomComponentState::instance().outputs();
         const auto status = MultiroomComponentState::instance().status_text();
         const auto signature = outputs_signature(outputs);
@@ -280,7 +465,7 @@ private:
         return 0;
     }
 
-    LRESULT on_scroll(UINT, WPARAM, LPARAM lp, BOOL&) {
+    LRESULT on_scroll(UINT, WPARAM wp, LPARAM lp, BOOL&) {
         HWND slider = reinterpret_cast<HWND>(lp);
         if (slider == nullptr) return 0;
 
@@ -292,7 +477,6 @@ private:
 
         const auto index = static_cast<size_t>(id - kSpeakerVolumeBase);
         const int volume = static_cast<int>(::SendMessageW(slider, TBM_GETPOS, 0, 0));
-        MultiroomComponentState::instance().set_output_volume(outputs_[index].id, volume);
         outputs_[index].volume = volume;
 
         if (index < volume_labels_.size() && volume_labels_[index] != nullptr) {
@@ -300,7 +484,17 @@ private:
             ::SetWindowTextW(volume_labels_[index], text.c_str());
         }
 
+        const auto notification = LOWORD(wp);
+        if (notification == TB_THUMBTRACK || notification == TB_THUMBPOSITION) {
+            volume_drag_active_ = true;
+            return 0;
+        }
+
+        volume_drag_active_ = false;
+        MultiroomComponentState::instance().set_output_volume(outputs_[index].id, volume);
+        outputs_signature_ = outputs_signature(outputs_);
         if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+        SetTimer(kRefreshTimer, 250);
         return 0;
     }
 
@@ -397,7 +591,7 @@ private:
             L"PIN",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
             kPopupPadding,
-            popup_height() - 30,
+            popup_height() - 31,
             24,
             20,
             m_hWnd,
@@ -411,7 +605,7 @@ private:
             L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
             kPopupPadding + 28,
-            popup_height() - 32,
+            popup_height() - 34,
             54,
             22,
             m_hWnd,
@@ -423,9 +617,9 @@ private:
             0,
             L"BUTTON",
             L"Pair",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             kPopupPadding + 88,
-            popup_height() - 32,
+            popup_height() - 35,
             58,
             24,
             m_hWnd,
@@ -437,9 +631,9 @@ private:
             0,
             L"BUTTON",
             L"Refresh",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             width - kPopupPadding - 88,
-            popup_height() - 32,
+            popup_height() - 35,
             88,
             24,
             m_hWnd,
@@ -504,11 +698,11 @@ private:
             0,
             L"BUTTON",
             name.c_str(),
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | (playable ? 0 : WS_DISABLED),
-            kPopupPadding + 12,
-            row_top + 4,
-            width - 124,
-            22,
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_NOTIFY | (playable ? 0 : WS_DISABLED),
+            kPopupPadding + 8,
+            row_top + 3,
+            width - (kPopupPadding * 2) - 16,
+            28,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerCheckBase + index),
             core_api::get_my_instance(),
@@ -518,11 +712,11 @@ private:
             0,
             TRACKBAR_CLASSW,
             nullptr,
-            WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | (playable ? 0 : WS_DISABLED),
-            kPopupPadding + 30,
-            row_top + 24,
-            width - 154,
-            20,
+            WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_TRANSPARENTBKGND | (playable ? 0 : WS_DISABLED),
+            kPopupPadding + 42,
+            row_top + 34,
+            width - 166,
+            24,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerVolumeBase + index),
             core_api::get_my_instance(),
@@ -534,7 +728,7 @@ private:
             L"",
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
             width - kPopupPadding - 80,
-            row_top + 26,
+            row_top + 36,
             80,
             20,
             m_hWnd,
@@ -554,6 +748,7 @@ private:
 
     HWND add_control(HWND control) {
         WIN32_OP_D(control != nullptr);
+        ::SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(popup_font()), TRUE);
         controls_.push_back(control);
         return control;
     }
@@ -586,6 +781,15 @@ private:
         CRect rc;
         WIN32_OP_D(GetClientRect(&rc));
         return rc.Width();
+    }
+
+    std::wstring selection_summary() const {
+        const auto selected = std::count_if(outputs_.begin(), outputs_.end(), [](const auto& output) {
+            return output.selected;
+        });
+        if (outputs_.empty()) return L"Looking for available speakers";
+        if (selected == 0) return std::to_wstring(outputs_.size()) + L" available - none selected";
+        return std::to_wstring(selected) + (selected == 1 ? L" speaker selected" : L" speakers selected");
     }
 
     void update_scrollbar() {
@@ -658,6 +862,14 @@ private:
         return callback_.is_valid() ? callback_->query_std_color(ui_color_text) : GetSysColor(COLOR_WINDOWTEXT);
     }
 
+    COLORREF secondary_text_color() const {
+        return blend_color(text_color(), background_color(), 42);
+    }
+
+    COLORREF accent_color() const {
+        return airplay_accent(background_color());
+    }
+
     HGDIOBJ popup_font() const {
         return callback_.is_valid() ? reinterpret_cast<HGDIOBJ>(callback_->query_font_ex(ui_font_default)) : GetStockObject(DEFAULT_GUI_FONT);
     }
@@ -667,7 +879,9 @@ private:
     }
 
     COLORREF row_color(bool selected) const {
-        return blend_color(background_color(), text_color(), selected ? 12 : 6);
+        return selected
+            ? blend_color(background_color(), accent_color(), color_is_dark(background_color()) ? 20 : 10)
+            : blend_color(background_color(), text_color(), color_is_dark(background_color()) ? 10 : 4);
     }
 
     HWND owner_ = nullptr;
@@ -677,7 +891,9 @@ private:
     std::string outputs_signature_;
     std::vector<HWND> controls_;
     std::vector<HWND> volume_labels_;
+    CFont title_font_;
     size_t first_visible_row_ = 0;
+    bool volume_drag_active_ = false;
 };
 
 class SpeakerSelectorElement
@@ -772,6 +988,9 @@ private:
         const COLORREF background = m_callback->query_std_color(ui_color_background);
         const COLORREF text = m_callback->query_std_color(ui_color_text);
         const COLORREF border = blend_color(background, text, 35);
+        const auto label = MultiroomComponentState::instance().selected_label();
+        const bool has_selection = label != L"No speakers";
+        const COLORREF glyph = has_selection ? airplay_accent(background) : text;
 
         CBrush background_brush;
         WIN32_OP_D(background_brush.CreateSolidBrush(background) != nullptr);
@@ -791,15 +1010,19 @@ private:
         dc.SetBkMode(TRANSPARENT);
         SelectObjectScope font_scope(dc, reinterpret_cast<HGDIOBJ>(m_callback->query_font_ex(ui_font_default)));
 
-        CRect text_rect = button;
-        text_rect.DeflateRect(9, 1, 22, 1);
-        const auto label = MultiroomComponentState::instance().selected_label();
-        const auto display = label == L"No speakers" ? L"AirPlay" : label;
-        WIN32_OP_D(dc.DrawTextW(display.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+        if (button.Width() < 70) {
+            draw_airplay_audio_glyph(dc.m_hDC, CPoint(button.CenterPoint().x, button.CenterPoint().y - 3), glyph, 9);
+        } else {
+            draw_airplay_audio_glyph(dc.m_hDC, CPoint(button.left + 18, button.CenterPoint().y - 3), glyph, 8);
+            CRect text_rect = button;
+            text_rect.DeflateRect(35, 1, 22, 1);
+            const auto display = has_selection ? label : std::wstring(L"AirPlay");
+            WIN32_OP_D(dc.DrawTextW(display.c_str(), -1, &text_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
 
-        CRect arrow_rect = button;
-        arrow_rect.left = arrow_rect.right - 18;
-        WIN32_OP_D(dc.DrawTextW(L"\x25BE", -1, &arrow_rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+            CRect arrow_rect = button;
+            arrow_rect.left = arrow_rect.right - 18;
+            WIN32_OP_D(dc.DrawTextW(L"\x25BE", -1, &arrow_rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+        }
 
         if (GetFocus() == m_hWnd) {
             CRect focus = button;

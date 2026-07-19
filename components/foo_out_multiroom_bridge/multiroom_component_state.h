@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +41,7 @@ private:
     void refresh_outputs_worker();
     void refresh_outputs_for_playback();
     void schedule_control_update();
+    void schedule_volume_update(const std::vector<std::string>& ids);
     void control_update_worker();
     void pairing_worker(std::string id, std::string pin);
 
@@ -56,7 +58,8 @@ private:
     bool refresh_in_progress_ = false;
     bool refresh_requested_ = false;
     bool control_in_progress_ = false;
-    bool control_requested_ = false;
+    bool control_full_update_requested_ = false;
+    std::set<std::string> control_volume_update_ids_;
     bool pairing_in_progress_ = false;
     bool playback_format_valid_ = false;
     int master_volume_percent_ = 100;
