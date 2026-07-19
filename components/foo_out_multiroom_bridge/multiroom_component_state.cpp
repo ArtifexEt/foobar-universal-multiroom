@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "multiroom_component_state.h"
+#include "speaker_toolbar.h"
 
 #include <algorithm>
 #include <cmath>
@@ -404,6 +405,7 @@ void MultiroomComponentState::refresh_outputs_worker() {
         }
 
         if (refresh_ok) {
+            notify_multiroom_speaker_toolbar_changed();
             FB2K_console_formatter() << "[Universal Multiroom] AirPlay discovery refresh #" << refresh_number
                                       << ": " << refreshed_outputs.size() << " device(s)";
             for (const auto& output : refreshed_outputs) {
@@ -483,12 +485,29 @@ void MultiroomComponentState::refresh_outputs_for_playback() {
 void MultiroomComponentState::schedule_control_update() {
     {
         std::lock_guard lock(mutex_);
+        control_full_update_requested_ = true;
         if (control_in_progress_) {
-            control_requested_ = true;
             return;
         }
         control_in_progress_ = true;
-        control_requested_ = false;
+    }
+
+    if (control_thread_.joinable()) {
+        control_thread_.join();
+    }
+    control_thread_ = std::thread(&MultiroomComponentState::control_update_worker, this);
+}
+
+void MultiroomComponentState::schedule_volume_update(const std::vector<std::string>& ids) {
+    if (ids.empty()) return;
+
+    {
+        std::lock_guard lock(mutex_);
+        control_volume_update_ids_.insert(ids.begin(), ids.end());
+        if (control_in_progress_) {
+            return;
+        }
+        control_in_progress_ = true;
     }
 
     if (control_thread_.joinable()) {
@@ -499,14 +518,33 @@ void MultiroomComponentState::schedule_control_update() {
 
 void MultiroomComponentState::control_update_worker() {
     for (;;) {
+        // A trackbar can produce dozens of notifications per second. Give those
+        // notifications a short window to collapse into one RTSP update instead
+        // of blocking the PCM writer once for every intermediate thumb position.
+        bool debounce_volume_updates = false;
+        {
+            std::lock_guard lock(mutex_);
+            debounce_volume_updates =
+                !control_full_update_requested_ && !control_volume_update_ids_.empty();
+        }
+        if (debounce_volume_updates) {
+            // Do not hold either state or transport locks during the debounce.
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        }
+
         std::vector<multiroom::OutputDevice> outputs_snapshot;
+        std::set<std::string> volume_update_ids;
         multiroom::PcmFormat playback_format_snapshot{};
         int master_volume_snapshot = 100;
         bool should_connect = false;
+        bool full_update = false;
         {
             std::lock_guard lock(mutex_);
             outputs_snapshot = cached_outputs_;
             master_volume_snapshot = master_volume_percent_;
+            full_update = control_full_update_requested_;
+            control_full_update_requested_ = false;
+            volume_update_ids.swap(control_volume_update_ids_);
             should_connect = playback_open_.load() && playback_format_valid_;
             if (should_connect) {
                 playback_format_snapshot = playback_format_;
@@ -518,24 +556,33 @@ void MultiroomComponentState::control_update_worker() {
         bool control_ok = false;
 
         try {
-            const auto selected = selected_ids(outputs_snapshot);
             std::lock_guard transport_lock(transport_mutex_);
-            transport_.set_enabled_outputs(selected);
-            for (const auto& output : outputs_snapshot) {
-                transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
-            }
-            const auto previous_outputs = outputs_snapshot;
-            if (should_connect) {
-                if (!playback_engine_) {
-                    playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
+            if (full_update) {
+                const auto selected = selected_ids(outputs_snapshot);
+                transport_.set_enabled_outputs(selected);
+                for (const auto& output : outputs_snapshot) {
+                    transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
                 }
-                if (!playback_engine_->stream_open()) {
-                    playback_engine_->open_stream(playback_format_snapshot);
+                const auto previous_outputs = outputs_snapshot;
+                if (should_connect) {
+                    if (!playback_engine_) {
+                        playback_engine_ = std::make_unique<multiroom::MultiroomEngine>(transport_);
+                    }
+                    if (!playback_engine_->stream_open()) {
+                        playback_engine_->open_stream(playback_format_snapshot);
+                    }
+                    transport_.connect_selected_outputs();
                 }
-                transport_.connect_selected_outputs();
+                outputs_snapshot = transport_.list_outputs();
+                preserve_user_output_state(outputs_snapshot, previous_outputs);
+            } else {
+                for (const auto& output : outputs_snapshot) {
+                    if (volume_update_ids.find(output.id) == volume_update_ids.end()) continue;
+                    transport_.set_output_volume(
+                        output.id,
+                        effective_remote_volume(output.volume, master_volume_snapshot));
+                }
             }
-            outputs_snapshot = transport_.list_outputs();
-            preserve_user_output_state(outputs_snapshot, previous_outputs);
             control_ok = true;
         } catch (const std::exception& e) {
             control_error_narrow = e.what();
@@ -545,7 +592,10 @@ void MultiroomComponentState::control_update_worker() {
         {
             std::lock_guard lock(mutex_);
             if (control_ok) {
-                cached_outputs_ = outputs_snapshot;
+                if (full_update) {
+                    preserve_user_output_state(outputs_snapshot, cached_outputs_);
+                    cached_outputs_ = outputs_snapshot;
+                }
                 last_error_.clear();
             } else {
                 last_error_ = std::move(control_error);
@@ -553,6 +603,7 @@ void MultiroomComponentState::control_update_worker() {
         }
 
         if (control_ok) {
+            notify_multiroom_speaker_toolbar_changed();
             FB2K_console_formatter() << "[Universal Multiroom] Speaker control update applied";
         } else {
             FB2K_console_formatter() << "[Universal Multiroom] Speaker control update failed: "
@@ -562,10 +613,8 @@ void MultiroomComponentState::control_update_worker() {
         bool run_again = false;
         {
             std::lock_guard lock(mutex_);
-            if (control_requested_) {
-                control_requested_ = false;
-                run_again = true;
-            } else {
+            run_again = control_full_update_requested_ || !control_volume_update_ids_.empty();
+            if (!run_again) {
                 control_in_progress_ = false;
             }
         }
@@ -681,6 +730,7 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
         }
         if (changed) {
             update_stored_output_state(updated_output);
+            notify_multiroom_speaker_toolbar_changed();
         }
         schedule_control_update();
     } catch (const std::exception& e) {
@@ -708,8 +758,8 @@ void MultiroomComponentState::set_output_volume(const std::string& id, int volum
         }
         if (changed) {
             update_stored_output_state(updated_output);
+            schedule_volume_update({updated_output.id});
         }
-        schedule_control_update();
     } catch (const std::exception& e) {
         std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
@@ -718,16 +768,19 @@ void MultiroomComponentState::set_output_volume(const std::string& id, int volum
 
 void MultiroomComponentState::set_master_volume_percent(int volume) {
     try {
-        bool discovery_started = false;
+        std::vector<std::string> output_ids;
         {
             std::lock_guard lock(mutex_);
             master_volume_percent_ = std::clamp(volume, 0, 100);
-            discovery_started = discovery_started_;
+            if (discovery_started_) {
+                output_ids.reserve(cached_outputs_.size());
+                for (const auto& output : cached_outputs_) {
+                    output_ids.push_back(output.id);
+                }
+            }
             last_error_.clear();
         }
-        if (discovery_started) {
-            schedule_control_update();
-        }
+        schedule_volume_update(output_ids);
     } catch (const std::exception& e) {
         std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());

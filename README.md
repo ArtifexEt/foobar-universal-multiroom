@@ -31,6 +31,8 @@ without changing the foobar UI.
   volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
 - `AirPlay Speakers...` is available as a normal foobar command and can be
   placed in the Buttons toolbar to open the compact multi-speaker selector.
+- Foobar2000 2.x also receives a native `AirPlay` toolbar dropdown. It shows the
+  current group, exposes quick speaker toggles, and opens the full picker.
 - Preferences expose status, refresh, repository, and support actions with
   foobar dark-mode/scaling hooks and PIN pairing for discovered AirPlay 2
   speakers.
@@ -58,7 +60,9 @@ without changing the foobar UI.
   that feeds selected AirPlay 2 sessions from the normal foobar output
   pipeline.
 - Per-speaker UI volume changes are sent to active AirPlay sessions with native
-  RTSP `SET_PARAMETER` volume updates.
+  RTSP `SET_PARAMETER` volume updates. Drag events are committed once at the
+  end of the gesture and coalesced on a volume-only control path so they do not
+  repeatedly block PCM delivery or reconnect the selected group.
 - The main foobar2000 volume is treated as a remote AirPlay master volume
   multiplier instead of digitally attenuating the PCM stream.
 - macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
@@ -73,6 +77,19 @@ without changing the foobar UI.
   as a future service, helper, or library build outside the Windows foobar2000
   component.
 
+## Adding the speaker selector to foobar2000
+
+- In a Buttons toolbar, open its configuration and add
+  `Playback > AirPlay Speakers...`.
+- For the live group label, add foobar2000's Toolbar Dropdown element and
+  choose `AirPlay` as its data source.
+- In Layout Editing Mode, the standalone utility element is named
+  `AirPlay Speaker Selector Toolbar` and can be placed next to playback
+  controls or the seekbar.
+
+The command, native dropdown, and standalone element all open or control the
+same persisted speaker group.
+
 ## Repository Layout
 
 - `components/foo_out_multiroom_bridge/` - foobar2000 component and public
@@ -83,6 +100,7 @@ without changing the foobar UI.
 - `docs/AIRPLAY_ENGINE.md` - native AirPlay engine plan.
 - `docs/SYNC_ENGINE.md` - synchronized playback clock plan.
 - `docs/UI_PLAN.md` - foobar UI plan.
+- `docs/UI_AUDIT.md` - implemented UI surfaces, fixes, and remaining parity work.
 - `docs/ROADMAP.md` - implementation phases.
 - `docs/RISKS.md` - technical and licensing risks.
 
