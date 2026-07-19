@@ -942,6 +942,11 @@ void MultiroomComponentState::clear_playback_metadata() {
     schedule_metadata_update();
 }
 
+void MultiroomComponentState::prepare_playback_open() {
+    playback_open_cancel_requested_.store(false);
+    transport_.reset_pending_open_cancel();
+}
+
 void MultiroomComponentState::cancel_pending_playback_open() {
     playback_open_cancel_requested_.store(true);
     // Deliberately do not take transport_mutex_: the setup worker owns it while
@@ -952,8 +957,6 @@ void MultiroomComponentState::cancel_pending_playback_open() {
 void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& format) {
     try {
         validate_playback_format(format);
-        playback_open_cancel_requested_.store(false);
-        transport_.reset_pending_open_cancel();
         {
             std::lock_guard lock(mutex_);
             playback_connecting_ = true;

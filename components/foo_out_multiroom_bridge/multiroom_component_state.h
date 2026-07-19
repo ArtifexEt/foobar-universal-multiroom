@@ -31,6 +31,7 @@ public:
     void set_playback_metadata(const multiroom::PlaybackMetadata& metadata);
     void update_playback_position(uint64_t position_ms);
     void clear_playback_metadata();
+    void prepare_playback_open();
     void cancel_pending_playback_open();
     void open_playback_stream(const multiroom::PcmFormat& format);
     void write_playback_pcm(const void* frames, size_t bytes);

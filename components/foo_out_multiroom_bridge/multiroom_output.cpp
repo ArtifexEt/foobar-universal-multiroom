@@ -218,6 +218,9 @@ private:
         }
 
         stop_stream();
+        // Reset cancellation before the worker exists. Any Stop arriving after
+        // this point must remain visible to the entire asynchronous setup.
+        MultiroomComponentState::instance().prepare_playback_open();
 
         {
             std::lock_guard lock(queue_mutex_);
