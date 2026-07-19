@@ -70,11 +70,17 @@ without changing the foobar UI.
   front-cover artwork to active AirPlay sessions. New sessions receive the
   current snapshot, while track starts and playback stop explicitly clear stale
   receiver metadata before the next artwork is available.
+- AirPlay 2 receiver-side play, pause, play/pause toggle, stop, next, and
+  previous commands are decoded from the encrypted event channel and dispatched
+  to foobar on its main thread. Duplicate command IDs from a speaker group are
+  ignored, and a mid-stream transport failure requests one controlled foobar
+  stop instead of leaving the output in a retry loop. A receiver that rejects
+  remote-command advertisement keeps its already-negotiated audio session.
 - macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
   for the portable core/AirPlay path that uses system Bonjour and sends a real
   generated tone through `MultiroomEngine`.
-- Still missing before daily use: full remote-command mapping from the
-  encrypted event channel and multi-speaker drift/timing hardening.
+- Still missing before daily use: device-side volume feedback and
+  multi-speaker drift/timing hardening.
 
 ## TODO
 

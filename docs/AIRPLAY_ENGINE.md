@@ -77,9 +77,12 @@ select, authenticate, synchronize, and stream to speakers by itself.
 - External projects may be used only as protocol/behavior references during
   research. Do not vendor, link, call, or copy their implementation into this
   component unless the licensing and architecture are explicitly revisited.
-- Requires the encrypted event channel to be serviced continuously. The current
-  sender decrypts pushed RTSP event requests and replies with encrypted `200 OK`
-  responses; the next step is mapping those commands onto foobar playback state.
+- Services the encrypted event channel continuously, replies to pushed RTSP
+  requests, decodes binary-plist `sendMediaRemoteCommand` events, and maps play,
+  pause, toggle, stop, next, and previous onto foobar's main-thread playback
+  control. Receiver `updateInfo` messages remain informational and cannot be
+  mistaken for playback commands. Remote-command advertisement is treated as
+  a capability negotiation, so a non-supporting receiver can still play audio.
 
 ## Synchronization
 
@@ -111,8 +114,8 @@ The UI should display two different ideas clearly:
 8. Add per-speaker volume.
 9. Add offset compensation.
 10. Add PIN pairing and persisted pair-verify credentials.
-11. Add remote playback feedback for pause, previous, next, and device-side
-   volume changes.
+11. Add device-side volume feedback; remote play, pause, stop, previous, and
+    next are implemented.
 12. Harden metadata capability negotiation for receivers that advertise only
     binary-plist now-playing support instead of the implemented DMAP path.
 

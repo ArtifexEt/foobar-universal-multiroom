@@ -46,6 +46,11 @@ AirPlayPairingResult AirPlayTransport::pair_output(const std::string& id, const 
     return sessions_.pair_output(*output, pin);
 }
 
+void AirPlayTransport::set_remote_command_handler(
+    AirPlayRemoteCommandHandler handler) {
+    sessions_.set_remote_command_handler(std::move(handler));
+}
+
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
     sync_discovered_outputs();
     registry_.set_enabled_outputs(resolve_output_ids(ids));

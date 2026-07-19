@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -892,11 +893,119 @@ std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
     return std::string(reinterpret_cast<const char*>(body.data()), body.size());
 }
 
+std::string make_airplay_remote_supported_commands_body() {
+    using namespace fxchain::airplay::bplist;
+
+    Array supported;
+    supported.reserve(6);
+    for (int64_t command = 0; command <= 5; ++command) {
+        Dict info;
+        info.emplace_back("kCommandInfoCommandKey", Value::integer(command));
+        info.emplace_back("kCommandInfoEnabledKey", Value::boolean(true));
+        supported.push_back(Value::object(std::move(info)));
+    }
+
+    Dict params;
+    params.emplace_back(
+        "mrSupportedCommandsFromSender",
+        Value::array(std::move(supported)));
+
+    Dict root;
+    root.emplace_back("type", Value::str("updateMRSupportedCommands"));
+    root.emplace_back("params", Value::object(std::move(params)));
+    const auto encoded = encode(Value::object(std::move(root)));
+    return std::string(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+}
+
+bool airplay_remote_command_advertisement_accepted(int status_code) {
+    return status_code >= 200 && status_code < 300;
+}
+
 uint32_t airplay_progress_display_start(uint32_t track_start) {
     constexpr uint32_t kMetadataLeadFrames = 15360;
     return track_start >= kMetadataLeadFrames
         ? track_start - kMetadataLeadFrames
         : 0;
+}
+
+std::optional<AirPlayRemoteCommandEvent> parse_airplay_remote_command_message(
+    const std::string& message) {
+    const auto request_line_end = message.find("\r\n");
+    if (request_line_end == std::string::npos ||
+        message.substr(0, request_line_end).rfind("POST /command ", 0) != 0) {
+        return std::nullopt;
+    }
+
+    const auto header_end = message.find("\r\n\r\n", request_line_end);
+    if (header_end == std::string::npos) {
+        return std::nullopt;
+    }
+
+    const auto body = message.substr(header_end + 4);
+    if (body.size() < 8 || body.compare(0, 8, "bplist00") != 0) {
+        return std::nullopt;
+    }
+
+    const auto decoded = fxchain::airplay::bplist::decode(bytes_from_string(body));
+    if (!decoded || decoded->type != fxchain::airplay::bplist::Value::Type::Dict) {
+        return std::nullopt;
+    }
+
+    const auto* type = decoded->find("type");
+    if (type == nullptr || type->asStr() != "sendMediaRemoteCommand") {
+        return std::nullopt;
+    }
+
+    std::optional<int64_t> command_number;
+    if (const auto* modern = decoded->find("modernMediaRemoteCommand")) {
+        if (modern->type == fxchain::airplay::bplist::Value::Type::Int) {
+            command_number = modern->i;
+        } else if (modern->type == fxchain::airplay::bplist::Value::Type::Str) {
+            char* end = nullptr;
+            const auto parsed = std::strtoll(modern->s.c_str(), &end, 10);
+            if (end != modern->s.c_str() && *end == '\0') {
+                command_number = parsed;
+            }
+        }
+    }
+
+    std::optional<AirPlayRemoteCommand> command;
+    if (command_number) {
+        switch (*command_number) {
+        case 0: command = AirPlayRemoteCommand::Play; break;
+        case 1: command = AirPlayRemoteCommand::Pause; break;
+        case 2: command = AirPlayRemoteCommand::TogglePlayPause; break;
+        case 3: command = AirPlayRemoteCommand::Stop; break;
+        case 4: command = AirPlayRemoteCommand::NextTrack; break;
+        case 5: command = AirPlayRemoteCommand::PreviousTrack; break;
+        default: break;
+        }
+    }
+
+    if (!command) {
+        const auto* value = decoded->find("value");
+        const auto legacy = value == nullptr ? std::string{} : lower_ascii(value->asStr());
+        if (legacy == "play") command = AirPlayRemoteCommand::Play;
+        else if (legacy == "paus" || legacy == "pause") command = AirPlayRemoteCommand::Pause;
+        else if (legacy == "plps") command = AirPlayRemoteCommand::TogglePlayPause;
+        else if (legacy == "stop") command = AirPlayRemoteCommand::Stop;
+        else if (legacy == "next") command = AirPlayRemoteCommand::NextTrack;
+        else if (legacy == "prev") command = AirPlayRemoteCommand::PreviousTrack;
+    }
+
+    if (!command) {
+        return std::nullopt;
+    }
+
+    AirPlayRemoteCommandEvent event;
+    event.command = *command;
+    if (const auto* params = decoded->find("params");
+        params != nullptr && params->type == fxchain::airplay::bplist::Value::Type::Dict) {
+        if (const auto* command_id = params->find("kMRMediaRemoteOptionCommandID")) {
+            event.command_id = command_id->asStr();
+        }
+    }
+    return event;
 }
 
 class AirPlayRtspControlClient::Connection {
@@ -910,6 +1019,11 @@ public:
 
     ~Connection() {
         close();
+    }
+
+    void set_remote_command_handler(
+        std::function<void(const AirPlayRemoteCommandEvent&)> handler) {
+        remote_command_handler_ = std::move(handler);
     }
 
     void connect_to(const std::string& host, uint16_t port) {
@@ -1281,6 +1395,14 @@ public:
                 ap2_headers()));
         }
 
+        const auto remote_command_response = request(
+            "POST",
+            "/command",
+            ap2_headers({{"Content-Type", "application/x-apple-binary-plist"}}),
+            make_airplay_remote_supported_commands_body());
+        const bool remote_commands_supported =
+            airplay_remote_command_advertisement_accepted(remote_command_response.status_code);
+
         auto ports = local_udp_ports().to_transport_ports();
         ports.server_data_port = stream_ports.first;
         ports.server_control_port = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
@@ -1291,6 +1413,9 @@ public:
         session.stream_uri = stream_uri_;
         session.server_name = "AirPlay2";
         session.supported_methods = {"GET", "SETUP", "RECORD", "SET_PARAMETER", "FLUSH", "TEARDOWN"};
+        if (remote_commands_supported) {
+            session.supported_methods.push_back("POST");
+        }
         if (ap2_uses_ptp_) {
             session.supported_methods.push_back("SETPEERS");
         }
@@ -1854,7 +1979,23 @@ private:
 #else
             const ssize_t received = recv(event_handle, buffer, sizeof(buffer), 0);
 #endif
-            if (received <= 0) {
+            if (received == 0) {
+                break;
+            }
+            if (received < 0) {
+#ifdef _WIN32
+                const auto error = WSAGetLastError();
+                if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK || error == WSAEINTR) {
+                    continue;
+                }
+#else
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+#endif
+                break;
+            }
+            if (!event_running_) {
                 continue;
             }
 
@@ -1871,6 +2012,7 @@ private:
                 plain_buffer.clear();
             }
         }
+        event_running_ = false;
     }
 
     void start_timing_worker() {
@@ -1932,6 +2074,16 @@ private:
             }
             const auto response = "RTSP/1.0 200 OK\r\nCSeq: " + cseq + "\r\n\r\n";
             send_event_response(event_handle, response);
+
+            const auto remote_event = parse_airplay_remote_command_message(message);
+            if (remote_event && remote_command_handler_) {
+                try {
+                    remote_command_handler_(*remote_event);
+                } catch (const std::exception&) {
+                    // The receiver has already received its response; a consumer callback
+                    // must not terminate the encrypted event worker.
+                }
+            }
         }
     }
 
@@ -2079,6 +2231,7 @@ private:
     AirPlay2Bytes ap2_audio_key_;
     std::unique_ptr<AirPlay2FrameCipher> control_cipher_;
     std::unique_ptr<AirPlay2FrameCipher> event_cipher_;
+    std::function<void(const AirPlayRemoteCommandEvent&)> remote_command_handler_;
     std::atomic_bool event_running_ = false;
     std::thread event_thread_;
     socket_handle_t event_handle_ = kInvalidSocket;
@@ -2111,6 +2264,25 @@ AirPlayRtspControlClient::AirPlayRtspControlClient(std::shared_ptr<AirPlayPairin
     : pairing_store_(std::move(pairing_store)) {}
 
 AirPlayRtspControlClient::~AirPlayRtspControlClient() = default;
+
+void AirPlayRtspControlClient::set_remote_command_handler(
+    AirPlayRemoteCommandHandler handler) {
+    std::lock_guard lock(remote_command_mutex_);
+    remote_command_handler_ = std::move(handler);
+}
+
+void AirPlayRtspControlClient::dispatch_remote_command(
+    const std::string& output_id,
+    const AirPlayRemoteCommandEvent& event) {
+    AirPlayRemoteCommandHandler handler;
+    {
+        std::lock_guard lock(remote_command_mutex_);
+        handler = remote_command_handler_;
+    }
+    if (handler) {
+        handler(output_id, event);
+    }
+}
 
 std::optional<AirPlayPairingCredentials> AirPlayRtspControlClient::load_pairing_credentials(
     const OutputDevice& output) {
@@ -2171,6 +2343,9 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     }
 
     auto connection = std::make_unique<Connection>();
+    connection->set_remote_command_handler([this, output_id = output.id](const auto& event) {
+        dispatch_remote_command(output_id, event);
+    });
     auto credentials = load_pairing_credentials(output);
     auto session = connection->open_airplay2_transient(output, format, credentials);
     connections_[output.id] = std::move(connection);
@@ -2281,6 +2456,12 @@ AirPlayPairingResult AirPlayLoopbackControlClient::pair(const OutputDevice& outp
     return result;
 }
 
+void AirPlayLoopbackControlClient::set_remote_command_handler(
+    AirPlayRemoteCommandHandler handler) {
+    std::lock_guard lock(remote_command_mutex_);
+    remote_command_handler_ = std::move(handler);
+}
+
 AirPlayNegotiatedSession AirPlayLoopbackControlClient::open(const OutputDevice& output, const PcmFormat& format) {
     static_cast<void>(format);
 
@@ -2387,6 +2568,19 @@ size_t AirPlayLoopbackControlClient::flush_count() const {
 
 size_t AirPlayLoopbackControlClient::close_count() const {
     return close_count_;
+}
+
+void AirPlayLoopbackControlClient::emit_remote_command(
+    const std::string& output_id,
+    const AirPlayRemoteCommandEvent& event) {
+    AirPlayRemoteCommandHandler handler;
+    {
+        std::lock_guard lock(remote_command_mutex_);
+        handler = remote_command_handler_;
+    }
+    if (handler) {
+        handler(output_id, event);
+    }
 }
 
 std::shared_ptr<AirPlayControlClient> make_airplay_rtsp_control_client(

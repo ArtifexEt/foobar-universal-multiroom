@@ -124,11 +124,13 @@ public:
 private:
     void on_update() override {
         std::string worker_error;
+        bool failure_stop_requested = false;
         {
             std::lock_guard lock(queue_mutex_);
             worker_error = worker_error_;
+            failure_stop_requested = failure_stop_requested_;
         }
-        if (!worker_error.empty()) {
+        if (!worker_error.empty() && !failure_stop_requested) {
             throw_output_error(worker_error);
         }
     }
@@ -241,6 +243,7 @@ private:
                 std::ceil(std::max(buffer_length_, kMinimumBufferSeconds) * static_cast<double>(sample_rate_)));
             pcm_queue_.clear();
             worker_error_.clear();
+            failure_stop_requested_ = false;
             force_play_ = false;
             pacing_reset_ = true;
             paused_ = false;
@@ -343,13 +346,22 @@ private:
                 lock.lock();
             }
         } catch (const std::exception& e) {
-            std::lock_guard lock(queue_mutex_);
-            worker_error_ = e.what();
-            started_ = false;
+            {
+                std::lock_guard lock(queue_mutex_);
+                worker_error_ = e.what();
+                failure_stop_requested_ = true;
+                started_ = false;
+            }
+            MultiroomComponentState::instance().report_playback_failure(e.what());
         } catch (...) {
-            std::lock_guard lock(queue_mutex_);
-            worker_error_ = "Unknown AirPlay render thread failure.";
-            started_ = false;
+            const std::string message = "Unknown AirPlay render thread failure.";
+            {
+                std::lock_guard lock(queue_mutex_);
+                worker_error_ = message;
+                failure_stop_requested_ = true;
+                started_ = false;
+            }
+            MultiroomComponentState::instance().report_playback_failure(message);
         }
 
         in_flight_frames_.store(0);
@@ -365,8 +377,10 @@ private:
             started_ = false;
             stream_open_ = false;
             pcm_queue_.clear();
+            worker_error_.clear();
             force_play_ = false;
             pacing_reset_ = true;
+            failure_stop_requested_ = false;
             ++stream_epoch_;
         }
         queue_changed_.notify_all();
@@ -404,6 +418,7 @@ private:
     bool stream_open_ = false;
     bool force_play_ = false;
     bool pacing_reset_ = true;
+    bool failure_stop_requested_ = false;
     HANDLE wake_event_ = nullptr;
 };
 
