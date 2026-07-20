@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/multiroom_engine.h"
+#include "core/speaker_groups.h"
 #include "../../transports/airplay/airplay_transport.h"
 
 #include <atomic>
@@ -27,6 +28,14 @@ public:
     void pair_output(const std::string& id, const std::string& pin);
     bool pairing_in_progress();
     void toggle_output(const std::string& id);
+    std::vector<multiroom::SpeakerGroup> speaker_groups();
+    std::string save_speaker_group(
+        const std::string& id,
+        const std::string& name,
+        const std::vector<std::string>& output_ids);
+    void delete_speaker_group(const std::string& id);
+    bool activate_speaker_group(const std::string& id);
+    std::string active_speaker_group_id();
     void set_output_dropdown_visibility(const std::string& id, bool visible);
     void set_output_volume(const std::string& id, int volume);
     void set_master_volume_percent(int volume);

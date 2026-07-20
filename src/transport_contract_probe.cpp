@@ -18,6 +18,7 @@
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
 #include "../components/foo_out_multiroom_bridge/core/output_registry.h"
+#include "../components/foo_out_multiroom_bridge/core/speaker_groups.h"
 #include "../components/foo_out_multiroom_bridge/core/volume_control.h"
 #include "../transports/airplay/airplay_transport.h"
 
@@ -35,6 +36,69 @@ bool expect(bool condition, const std::string& message) {
     }
 
     return true;
+}
+
+bool exercise_speaker_groups() {
+    multiroom::SpeakerGroup group{
+        " downstairs ",
+        " Downstairs | Evening ",
+        {"living-room-old", "kitchen", "kitchen", ""},
+    };
+    group = multiroom::normalize_speaker_group(std::move(group));
+
+    bool ok = true;
+    ok &= expect(group.id == "downstairs" && group.name == "Downstairs | Evening",
+                 "speaker group identity and name should be normalized");
+    ok &= expect(group.output_ids == std::vector<std::string>({"living-room-old", "kitchen"}),
+                 "speaker group members should be non-empty and unique");
+
+    const auto encoded = multiroom::serialize_speaker_groups({group});
+    const auto decoded = multiroom::deserialize_speaker_groups(encoded);
+    ok &= expect(decoded.size() == 1 && decoded.front().id == group.id &&
+                 decoded.front().name == group.name && decoded.front().output_ids == group.output_ids,
+                 "speaker groups should survive a versioned settings round trip");
+
+    multiroom::OutputDevice living;
+    living.id = "living-room";
+    living.name = "Living Room";
+    living.aliases = {"living-room-old"};
+    living.selected = true;
+    multiroom::OutputDevice kitchen;
+    kitchen.id = "kitchen";
+    kitchen.name = "Kitchen";
+    kitchen.selected = true;
+    multiroom::OutputDevice office;
+    office.id = "office";
+    office.name = "Office";
+
+    auto outputs = std::vector<multiroom::OutputDevice>{living, kitchen, office};
+    const auto resolved = multiroom::resolve_speaker_group_output_ids(group, outputs);
+    ok &= expect(resolved == std::vector<std::string>({"living-room", "kitchen"}),
+                 "speaker groups should resolve persisted discovery aliases to current output IDs");
+    ok &= expect(multiroom::speaker_group_contains_persisted_output(group, "living-room", outputs) &&
+                 !multiroom::speaker_group_contains_persisted_output(group, "old-offline-selection", outputs),
+                 "group activation should select aliased members and clear unrelated persisted offline outputs");
+    ok &= expect(multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old", "kitchen"}, {}) &&
+                 !multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old"}, {}) &&
+                 !multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old", "kitchen", "old-offline-selection"}, {}),
+                 "a queued group should require its full persisted membership before discovery completes");
+    auto alternate_group = group;
+    alternate_group.id = "alternate";
+    alternate_group.output_ids = {"living-room-old", "office-offline"};
+    ok &= expect(!multiroom::speaker_group_matches_persisted_selection(
+                     group, {"living-room-old", "office-offline"}, outputs) &&
+                 multiroom::speaker_group_matches_persisted_selection(
+                     alternate_group, {"living-room-old", "office-offline"}, outputs),
+                 "persisted offline members should disambiguate groups with the same available subset");
+    ok &= expect(multiroom::speaker_group_matches_selection(group, outputs),
+                 "speaker group should match the exact selected output set");
+    outputs.back().selected = true;
+    ok &= expect(!multiroom::speaker_group_matches_selection(group, outputs),
+                 "speaker group should not match when an extra output is selected");
+    return ok;
 }
 void print_capabilities() {
     const std::vector<TransportCapability> capabilities = {
@@ -704,6 +768,7 @@ int main() {
         ok &= exercise_output_registry_retain();
         ok &= exercise_airplay_remote_commands();
         ok &= exercise_volume_does_not_block_audio();
+        ok &= exercise_speaker_groups();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {

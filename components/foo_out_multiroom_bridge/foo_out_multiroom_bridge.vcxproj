@@ -129,6 +129,10 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="core\speaker_groups.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="core\sync_clock.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
@@ -150,6 +154,7 @@
     <ClInclude Include="speaker_toolbar.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="core\volume_control.h" />
+    <ClInclude Include="core\speaker_groups.h" />
     <ClInclude Include="..\..\transports\airplay\airplay2_external_crypto.h" />
     <ClInclude Include="..\..\transports\airplay\airplay2_session.h" />
     <ClInclude Include="..\..\transports\airplay\airplay_rtsp.h" />

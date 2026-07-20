@@ -26,9 +26,10 @@ static constexpr UINT_PTR kPairPinLabelId = 32004;
 static constexpr UINT_PTR kVolumeLabelBase = 33000;
 static constexpr UINT_PTR kRefreshTimer = 34000;
 static constexpr UINT_PTR kToolbarRefreshTimer = 34001;
+static constexpr UINT_PTR kGroupComboId = 35000;
 static constexpr int kPopupWidth = 408;
 static constexpr int kPopupPadding = 22;
-static constexpr int kHeaderHeight = 92;
+static constexpr int kHeaderHeight = 112;
 static constexpr int kSectionHeight = 43;
 static constexpr int kRowHeight = 82;
 static constexpr int kFooterHeight = 54;
@@ -89,6 +90,10 @@ std::string outputs_signature(const std::vector<multiroom::OutputDevice>& output
                << output.format << ';';
     }
     return stream.str();
+}
+
+std::string groups_signature(const std::vector<multiroom::SpeakerGroup>& groups) {
+    return multiroom::serialize_speaker_groups(groups);
 }
 
 bool output_playable(const multiroom::OutputDevice& output) {
@@ -187,6 +192,7 @@ public:
     void open_below(HWND anchor) {
         auto& state = MultiroomComponentState::instance();
         outputs_ = state.outputs();
+        groups_ = state.speaker_groups();
         // Opening a view must be read-only for an active stream. Populate an
         // empty cache asynchronously only while stopped; the explicit Refresh
         // action is deferred by component state if playback is in progress.
@@ -195,6 +201,7 @@ public:
         }
         status_ = state.status_text();
         outputs_signature_ = outputs_signature(outputs_);
+        groups_signature_ = groups_signature(groups_);
 
         INITCOMMONCONTROLSEX cc = {};
         cc.dwSize = sizeof(cc);
@@ -286,7 +293,7 @@ private:
         dc.SetTextColor(text_color());
         SelectObjectScope font_scope(dc, popup_font());
 
-        CRect title(kPopupPadding, 0, rc.right - kPopupPadding, kHeaderHeight);
+        CRect title(kPopupPadding, 0, rc.right - kPopupPadding, 56);
         SelectObjectScope title_scope(dc, title_font_.m_hFont != nullptr ? title_font_.m_hFont : popup_font());
         WIN32_OP_D(dc.DrawTextW(MULTIROOM_PRODUCT_NAME_WIDE, -1, &title, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
 
@@ -498,6 +505,23 @@ private:
             return 0;
         }
 
+        if (id == kGroupComboId && code == CBN_SELCHANGE) {
+            HWND combo = ::GetDlgItem(m_hWnd, static_cast<int>(kGroupComboId));
+            const int selected = combo != nullptr ? static_cast<int>(::SendMessageW(combo, CB_GETCURSEL, 0, 0)) : 0;
+            if (selected > 0 && selected <= static_cast<int>(groups_.size())) {
+                const bool activated = MultiroomComponentState::instance().activate_speaker_group(
+                    groups_[static_cast<size_t>(selected - 1)].id);
+                if (!activated) ::SendMessageW(combo, CB_SETCURSEL, 0, 0);
+                outputs_ = MultiroomComponentState::instance().outputs();
+                outputs_signature_ = outputs_signature(outputs_);
+                sync_control_values();
+                redraw_all();
+                if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
+                SetTimer(kRefreshTimer, 250, nullptr);
+            }
+            return 0;
+        }
+
         if (id >= kSpeakerCheckBase && id < kSpeakerCheckBase + outputs_.size() && code == BN_CLICKED) {
             const auto index = static_cast<size_t>(id - kSpeakerCheckBase);
             MultiroomComponentState::instance().toggle_output(outputs_[index].id);
@@ -521,12 +545,16 @@ private:
         if (volume_drag_active_) return 0;
 
         const auto outputs = MultiroomComponentState::instance().outputs();
+        const auto groups = MultiroomComponentState::instance().speaker_groups();
         const auto status = MultiroomComponentState::instance().status_text();
         const auto signature = outputs_signature(outputs);
-        if (signature != outputs_signature_ || status != status_) {
+        const auto group_signature = groups_signature(groups);
+        if (signature != outputs_signature_ || group_signature != groups_signature_ || status != status_) {
             outputs_ = outputs;
+            groups_ = groups;
             status_ = status;
             outputs_signature_ = signature;
+            groups_signature_ = group_signature;
             rebuild_controls();
             resize_to_content();
             redraw_all();
@@ -636,6 +664,29 @@ private:
         update_scrollbar();
 
         const int width = client_width();
+
+        HWND group_combo = add_control(::CreateWindowExW(
+            0,
+            WC_COMBOBOXW,
+            nullptr,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            kPopupPadding,
+            59,
+            width - (kPopupPadding * 2),
+            220,
+            m_hWnd,
+            reinterpret_cast<HMENU>(kGroupComboId),
+            core_api::get_my_instance(),
+            nullptr));
+        ::SendMessageW(group_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Choose a speaker group..."));
+        const auto active_group_id = MultiroomComponentState::instance().active_speaker_group_id();
+        int active_group_index = 0;
+        for (int index = 0; index < static_cast<int>(groups_.size()); ++index) {
+            const auto label = L"Group: " + widen_utf8(groups_[static_cast<size_t>(index)].name);
+            ::SendMessageW(group_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+            if (groups_[static_cast<size_t>(index)].id == active_group_id) active_group_index = index + 1;
+        }
+        ::SendMessageW(group_combo, CB_SETCURSEL, active_group_index, 0);
 
         if (outputs_.empty()) {
             add_control(::CreateWindowExW(
@@ -997,8 +1048,10 @@ private:
     HWND owner_ = nullptr;
     ui_element_instance_callback_ptr callback_;
     std::vector<multiroom::OutputDevice> outputs_;
+    std::vector<multiroom::SpeakerGroup> groups_;
     std::wstring status_;
     std::string outputs_signature_;
+    std::string groups_signature_;
     std::vector<HWND> controls_;
     std::vector<HWND> volume_labels_;
     CFont title_font_;

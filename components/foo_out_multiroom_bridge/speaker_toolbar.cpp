@@ -73,21 +73,28 @@ public:
     }
 
     size_t getNumValues() override {
-        return playable_outputs().size() + 2;
+        return MultiroomComponentState::instance().speaker_groups().size() + playable_outputs().size() + 2;
     }
 
     void getValue(size_t index, pfc::string_base& out) override {
+        const auto groups = MultiroomComponentState::instance().speaker_groups();
         const auto outputs = playable_outputs();
         if (index == 0) {
             out = narrow_wide(MultiroomComponentState::instance().playback_destination_label()).c_str();
             return;
         }
-        if (index == outputs.size() + 1) {
+        if (index <= groups.size()) {
+            const auto& group = groups[index - 1];
+            const bool active = MultiroomComponentState::instance().active_speaker_group_id() == group.id;
+            out = ((active ? "[x] Group: " : "[ ] Group: ") + group.name).c_str();
+            return;
+        }
+        if (index == groups.size() + outputs.size() + 1) {
             out = "Select Wireless Speakers...";
             return;
         }
 
-        const auto output_index = index - 1;
+        const auto output_index = index - groups.size() - 1;
         if (output_index >= outputs.size()) {
             out = "Select Wireless Speakers...";
             return;
@@ -99,13 +106,19 @@ public:
 
     void setSelectedIndex(size_t index) override {
         if (index == 0) return;
+        const auto groups = MultiroomComponentState::instance().speaker_groups();
         const auto outputs = playable_outputs();
-        if (index == outputs.size() + 1) {
+        if (index <= groups.size()) {
+            MultiroomComponentState::instance().activate_speaker_group(groups[index - 1].id);
+            notify_multiroom_speaker_toolbar_changed();
+            return;
+        }
+        if (index == groups.size() + outputs.size() + 1) {
             show_multiroom_speaker_picker(core_api::get_main_window(), nullptr);
             return;
         }
 
-        const auto output_index = index - 1;
+        const auto output_index = index - groups.size() - 1;
         if (output_index >= outputs.size()) return;
         MultiroomComponentState::instance().toggle_output(outputs[output_index].id);
         notify_multiroom_speaker_toolbar_changed();

@@ -40,3 +40,22 @@ FONT 8, "MS Shell Dlg", 400, 0, 1
     PUSHBUTTON "Buy me a coffee", idSupportButton, 11, 44, 110, 14
     PUSHBUTTON "GitHub repo", idGitHubButton, 125, 44, 110, 14
 }
+
+IDD_MULTIROOM_PAGE_GROUPS DIALOGEX 0, 0, 480, 252
+STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 8, "MS Shell Dlg", 400, 0, 1
+{
+    LTEXT      "Virtual speaker groups", IDC_STATIC, 11, 9, 145, 13
+    LISTBOX    idGroupList, 11, 27, 145, 158, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_BORDER | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "New", idGroupNewButton, 11, 193, 43, 14
+    PUSHBUTTON "Delete", idGroupDeleteButton, 59, 193, 47, 14
+    PUSHBUTTON "Apply", idGroupApplyButton, 111, 193, 45, 14
+
+    LTEXT      "Name", IDC_STATIC, 171, 9, 35, 13
+    EDITTEXT   idGroupName, 210, 7, 253, 14, ES_AUTOHSCROLL
+    LTEXT      "Group members", IDC_STATIC, 171, 31, 150, 13
+    CONTROL    "", idGroupMemberList, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 171, 47, 292, 138
+    PUSHBUTTON "Save group", idGroupSaveButton, 348, 193, 115, 14
+    LTEXT      "Create a group once, then apply it from here or from the Wireless Speakers toolbar dropdown.", IDC_STATIC, 171, 216, 292, 25
+}
