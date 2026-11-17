@@ -262,9 +262,10 @@ public:
             }
         }
 
+        auto popup_rect = rectangle_at(position);
         WIN32_OP(Create(
             owner_ == nullptr ? core_api::get_main_window() : owner_,
-            rectangle_at(position),
+            popup_rect,
             L"Wireless Speakers",
             WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
             WS_EX_TOOLWINDOW) != nullptr);
