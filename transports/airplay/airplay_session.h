@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace multiroom::airplay {
@@ -64,9 +65,11 @@ public:
     std::set<std::string> ready_output_ids() const;
 
 private:
-    void close_control_session(AirPlaySessionState& session);
+    std::vector<std::pair<std::string, std::string>> detach_missing_sessions(
+        const std::set<std::string>& selected);
 
     mutable std::mutex mutex_;
+    std::mutex lifecycle_mutex_;
     std::mutex metadata_publish_mutex_;
     std::shared_ptr<const PlaybackMetadata> playback_metadata_;
     uint64_t metadata_revision_ = 1;

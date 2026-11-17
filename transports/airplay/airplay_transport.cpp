@@ -47,10 +47,14 @@ AirPlayPairingResult AirPlayTransport::pair_output(const std::string& id, const 
     if (!output) {
         throw std::out_of_range("Unknown AirPlay output: " + id);
     }
-    if (!output->supports_airplay2) {
-        throw std::runtime_error("AirPlay PIN pairing requires an AirPlay 2 output: " + id);
+    return pair_output(*output, pin);
+}
+
+AirPlayPairingResult AirPlayTransport::pair_output(const OutputDevice& output, const std::string& pin) {
+    if (!output.supports_airplay2) {
+        throw std::runtime_error("AirPlay PIN pairing requires an AirPlay 2 output: " + output.id);
     }
-    return sessions_.pair_output(*output, pin);
+    return sessions_.pair_output(output, pin);
 }
 
 void AirPlayTransport::set_remote_command_handler(
@@ -59,10 +63,15 @@ void AirPlayTransport::set_remote_command_handler(
 }
 
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
+    set_routed_outputs(ids);
+    const auto outputs = registry_.list();
+    sessions_.prepare_outputs(outputs);
+    close_unselected_output_sessions(outputs);
+}
+
+void AirPlayTransport::set_routed_outputs(const std::vector<std::string>& ids) {
     sync_discovered_outputs();
     registry_.set_enabled_outputs(resolve_output_ids(ids));
-    sessions_.prepare_outputs(registry_.list());
-    sessions_.close_missing_outputs(registry_.list());
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
@@ -118,7 +127,15 @@ void AirPlayTransport::connect_selected_outputs() {
         return;
     }
 
-    sessions_.open_for_outputs(registry_.list(), stream_format_);
+    open_output_sessions(registry_.list(), stream_format_);
+}
+
+void AirPlayTransport::open_output_sessions(const std::vector<OutputDevice>& desired, const PcmFormat& format) {
+    sessions_.open_for_outputs(desired, format);
+}
+
+void AirPlayTransport::close_unselected_output_sessions(const std::vector<OutputDevice>& desired) {
+    sessions_.close_missing_outputs(desired);
 }
 
 void AirPlayTransport::cancel_pending_open() {
@@ -223,6 +240,15 @@ std::vector<ScheduledPacket> AirPlayTransport::queued_packets() const {
 
 std::vector<AirPlaySessionState> AirPlayTransport::sessions() const {
     return sessions_.sessions();
+}
+
+std::vector<AirPlaySessionState> AirPlayTransport::playback_sessions() const {
+    auto snapshot = sessions_.sessions();
+    for (auto& session : snapshot) {
+        const auto output = registry_.find(session.output_id);
+        session.open = session.open && output && output->selected;
+    }
+    return snapshot;
 }
 
 void AirPlayTransport::sync_discovered_outputs() {

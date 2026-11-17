@@ -23,8 +23,10 @@ public:
     void refresh_discovery(std::chrono::milliseconds timeout = std::chrono::milliseconds(1500)) override;
     std::vector<OutputDevice> list_outputs() override;
     AirPlayPairingResult pair_output(const std::string& id, const std::string& pin);
+    AirPlayPairingResult pair_output(const OutputDevice& output, const std::string& pin);
     void set_remote_command_handler(AirPlayRemoteCommandHandler handler);
     void set_enabled_outputs(const std::vector<std::string>& ids) override;
+    void set_routed_outputs(const std::vector<std::string>& ids);
     void set_output_volume(const std::string& id, int volume) override;
     void set_initial_output_volume(const std::string& id, int volume);
     void set_session_volume(const std::string& id, int volume);
@@ -35,6 +37,8 @@ public:
     void publish_playback_metadata();
     void open_stream(const PcmFormat& format) override;
     void connect_selected_outputs();
+    void open_output_sessions(const std::vector<OutputDevice>& desired, const PcmFormat& format);
+    void close_unselected_output_sessions(const std::vector<OutputDevice>& desired);
     void reset_pending_open_cancel();
     void cancel_pending_open();
     void write_frames(const void* frames, size_t bytes, uint64_t stream_timestamp) override;
@@ -47,6 +51,7 @@ public:
     bool stream_open() const;
     std::vector<ScheduledPacket> queued_packets() const;
     std::vector<AirPlaySessionState> sessions() const;
+    std::vector<AirPlaySessionState> playback_sessions() const;
 
 private:
     void sync_discovered_outputs();

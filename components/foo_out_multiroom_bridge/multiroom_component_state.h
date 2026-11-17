@@ -71,6 +71,7 @@ private:
     void apply_receiver_volume(const std::string& output_id, int volume_percent);
 
     std::mutex mutex_;
+    std::mutex playback_lifecycle_mutex_;
     std::mutex transport_mutex_;
     multiroom::PcmFormat playback_format_;
     std::thread refresh_thread_;

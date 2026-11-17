@@ -55,6 +55,8 @@ constexpr uint32_t kAirPlay2LatencySeconds = 2;
 constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
 constexpr uint64_t kUninitializedRtpTimestamp = uint64_t{1} << 32;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
+using RtspClock = std::chrono::steady_clock;
+constexpr auto kRtspExchangeTimeout = std::chrono::seconds(10);
 
 enum class AirPlay2AudioEncoding {
     Alac,
@@ -145,6 +147,15 @@ void close_socket(socket_handle_t handle) {
     closesocket(handle);
 #else
     close(handle);
+#endif
+}
+
+bool socket_timed_out() {
+#ifdef _WIN32
+    const auto error = WSAGetLastError();
+    return error == WSAETIMEDOUT || error == WSAEWOULDBLOCK;
+#else
+    return errno == ETIMEDOUT || errno == EAGAIN || errno == EWOULDBLOCK;
 #endif
 }
 
@@ -1074,7 +1085,6 @@ public:
                 handle_.store(candidate);
                 if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0 &&
                     !cancelled_.load()) {
-                    configure_timeouts();
                     return true;
                 }
 
@@ -1099,18 +1109,16 @@ public:
         if (event_handle != kInvalidSocket) close_socket(event_handle);
     }
 
-    AirPlayRtspResponse exchange(const RtspRequest& request) {
-        const auto bytes = format_request(request);
-        send_all(bytes);
-        return read_response();
-    }
-
     AirPlayRtspResponse request(
         const std::string& method,
         const std::string& uri,
         std::map<std::string, std::string> headers = {},
         std::string body = {}) {
-        std::lock_guard lock(request_mutex_);
+        const auto deadline = RtspClock::now() + kRtspExchangeTimeout;
+        std::unique_lock lock(request_mutex_, std::defer_lock);
+        if (!lock.try_lock_until(deadline)) {
+            throw std::runtime_error("Timed out waiting to send AirPlay RTSP " + method + ".");
+        }
         headers.emplace("CSeq", std::to_string(next_cseq_++));
         headers.emplace("User-Agent", "FoobarUniversalMultiroom/0.1");
 
@@ -1119,7 +1127,7 @@ public:
         request.uri = uri;
         request.headers = std::move(headers);
         request.body = std::move(body);
-        return exchange(request);
+        return exchange_bytes(format_request(request), deadline);
     }
 
     AirPlayRtspResponse request_success(
@@ -1488,6 +1496,7 @@ public:
 private:
     void reset_session_state() {
         next_cseq_ = 1;
+        control_exchange_failed_ = false;
         next_rtp_sequence_ = 0;
         next_rtp_timestamp_ = kUninitializedRtpTimestamp;
         stream_sample_rate_ = kAirPlay2SampleRate;
@@ -1570,8 +1579,7 @@ private:
 
         AirPlayRtspResponse response;
         try {
-            send_all(request.str());
-            response = read_response();
+            response = exchange_bytes(request.str(), RtspClock::now() + kRtspExchangeTimeout);
         } catch (const std::exception& e) {
             throw std::runtime_error("AirPlay 2 HTTP " + uri + " failed: " + e.what());
         }
@@ -1977,14 +1985,6 @@ private:
         }
     }
 
-    void configure_timeouts() {
-        if (handle_.load() == kInvalidSocket) {
-            return;
-        }
-
-        configure_socket_timeouts(handle_.load(), 10000);
-    }
-
     void configure_socket_timeouts(socket_handle_t handle, unsigned long timeout_ms) {
         if (handle == kInvalidSocket) {
             return;
@@ -2185,41 +2185,87 @@ private:
         }
     }
 
-    void send_all_raw(const uint8_t* data, size_t size) {
+    socket_handle_t prepare_control_io(int timeout_option, RtspClock::time_point deadline) {
+        const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - RtspClock::now()).count();
+        if (remaining <= 0) {
+            throw std::runtime_error("AirPlay control exchange timed out.");
+        }
+        const auto handle = handle_.load();
+        if (handle == kInvalidSocket) {
+            throw std::runtime_error("AirPlay control connection is closed.");
+        }
+#ifdef _WIN32
+        const auto timeout = static_cast<DWORD>(remaining);
+        const int result = setsockopt(handle, SOL_SOCKET, timeout_option,
+            reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+        const timeval timeout{static_cast<time_t>(remaining / 1000), static_cast<long>((remaining % 1000) * 1000)};
+        const int result = setsockopt(handle, SOL_SOCKET, timeout_option, &timeout, sizeof(timeout));
+#endif
+        if (result != 0) {
+            throw std::runtime_error("Could not set the AirPlay control exchange timeout.");
+        }
+        return handle;
+    }
+
+    AirPlayRtspResponse exchange_bytes(const std::string& bytes, RtspClock::time_point deadline) {
+        if (control_exchange_failed_) {
+            throw std::runtime_error("AirPlay control connection previously failed.");
+        }
+        try {
+            send_all(bytes, deadline);
+            return read_response(deadline);
+        } catch (...) {
+            // A partial request or late response can leave the encrypted
+            // channel out of step. Fail later requests on this connection.
+            control_exchange_failed_ = true;
+            throw;
+        }
+    }
+
+    void send_all_raw(const uint8_t* data, size_t size, RtspClock::time_point deadline) {
         size_t sent = 0;
         while (sent < size) {
             const auto remaining = size - sent;
+            const auto handle = prepare_control_io(SO_SNDTIMEO, deadline);
 #ifdef _WIN32
-            const int rc = send(handle_.load(), reinterpret_cast<const char*>(data + sent), static_cast<int>(remaining), 0);
+            const int rc = send(handle, reinterpret_cast<const char*>(data + sent), static_cast<int>(remaining), 0);
 #else
-            const ssize_t rc = send(handle_.load(), data + sent, remaining, 0);
+            const ssize_t rc = send(handle, data + sent, remaining, 0);
 #endif
             if (rc <= 0) {
+                if (rc < 0 && socket_timed_out()) {
+                    throw std::runtime_error("AirPlay control exchange timed out sending the request.");
+                }
                 throw std::runtime_error("Could not write RTSP request to AirPlay endpoint.");
             }
             sent += static_cast<size_t>(rc);
         }
     }
 
-    void send_all(const std::string& bytes) {
+    void send_all(const std::string& bytes, RtspClock::time_point deadline) {
         if (!control_cipher_) {
-            send_all_raw(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+            send_all_raw(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), deadline);
             return;
         }
 
         const AirPlay2Bytes plaintext(bytes.begin(), bytes.end());
         const auto encrypted = control_cipher_->encrypt_frame(plaintext);
-        send_all_raw(encrypted.data(), encrypted.size());
+        send_all_raw(encrypted.data(), encrypted.size(), deadline);
     }
 
-    std::string read_plaintext_chunk() {
+    std::string read_plaintext_chunk(RtspClock::time_point deadline) {
         char buffer[4096] = {};
+        const auto handle = prepare_control_io(SO_RCVTIMEO, deadline);
 #ifdef _WIN32
-        const int received = recv(handle_.load(), buffer, static_cast<int>(sizeof(buffer)), 0);
+        const int received = recv(handle, buffer, static_cast<int>(sizeof(buffer)), 0);
 #else
-        const ssize_t received = recv(handle_.load(), buffer, sizeof(buffer), 0);
+        const ssize_t received = recv(handle, buffer, sizeof(buffer), 0);
 #endif
         if (received <= 0) {
+            if (received < 0 && socket_timed_out()) {
+                throw std::runtime_error("AirPlay control exchange timed out waiting for the response.");
+            }
             throw std::runtime_error("Could not read RTSP response from AirPlay endpoint.");
         }
 
@@ -2238,13 +2284,13 @@ private:
         return plaintext;
     }
 
-    AirPlayRtspResponse read_response() {
+    AirPlayRtspResponse read_response(RtspClock::time_point deadline) {
         std::string raw;
         size_t header_end = std::string::npos;
         size_t expected_size = 0;
 
         for (;;) {
-            raw += read_plaintext_chunk();
+            raw += read_plaintext_chunk(deadline);
             if (header_end == std::string::npos) {
                 header_end = raw.find("\r\n\r\n");
                 if (header_end != std::string::npos) {
@@ -2261,7 +2307,8 @@ private:
 
     std::atomic<socket_handle_t> handle_{kInvalidSocket};
     std::atomic_bool cancelled_ = false;
-    std::mutex request_mutex_;
+    std::timed_mutex request_mutex_;
+    bool control_exchange_failed_ = false;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
     std::atomic<uint64_t> next_rtp_timestamp_ = kUninitializedRtpTimestamp;

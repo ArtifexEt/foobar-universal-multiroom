@@ -171,7 +171,7 @@ std::string make_airplay_remote_command_message(
 
 class SelectiveFailingControlClient final : public multiroom::airplay::AirPlayControlClient {
 public:
-    enum class Request { Volume, Metadata };
+    enum class Request { Open, Close, Volume, Metadata };
 
     explicit SelectiveFailingControlClient(std::set<std::string> failing_outputs)
         : failing_outputs_(std::move(failing_outputs)) {}
@@ -198,6 +198,7 @@ public:
         const multiroom::OutputDevice& output,
         const multiroom::PcmFormat& format) override {
         static_cast<void>(format);
+        wait_if_blocked(Request::Open);
         ++open_count_;
         if (failing_outputs_.find(output.id) != failing_outputs_.end()) {
             throw std::runtime_error("simulated open failure");
@@ -245,7 +246,9 @@ public:
     void flush(const std::string&, const std::string&) override {}
     void reset_pending_open_cancel() override {}
     void cancel_pending_open() override {}
-    void close(const std::string&, const std::string&) override {}
+    void close(const std::string&, const std::string&) override {
+        wait_if_blocked(Request::Close);
+    }
 
     size_t open_count() const { return open_count_; }
     const std::vector<std::string>& audio_output_ids() const { return audio_output_ids_; }
@@ -368,6 +371,58 @@ bool exercise_metadata_does_not_block_audio() {
     ok &= expect(client->metadata_titles() == std::vector<std::pair<std::string, std::string>>{
                      {"living-room", "First track"}, {"living-room", "Latest track"}, {"kitchen", "Latest track"}},
                  "joining should replay current metadata only to the newly opened receiver");
+    return ok;
+}
+
+bool exercise_session_reconfiguration_does_not_block_audio() {
+    using namespace std::chrono_literals;
+    using Request = SelectiveFailingControlClient::Request;
+
+    auto client = std::make_shared<SelectiveFailingControlClient>(std::set<std::string>{});
+    multiroom::airplay::AirPlaySessionManager sessions(client);
+    const multiroom::PcmFormat format{44100, 2, 16};
+    auto living_room = make_airplay_loopback_output("living-room", "Living Room", 7500);
+    auto kitchen = make_airplay_loopback_output("kitchen", "Kitchen", 7501);
+    living_room.selected = true;
+    kitchen.selected = true;
+    sessions.open_for_outputs({living_room}, format);
+
+    const std::vector<int16_t> silence(704);
+    multiroom::ScheduledPacket packet;
+    packet.output_id = living_room.id;
+    packet.bytes = silence.size() * sizeof(int16_t);
+    const auto verify_pcm_during_request = [&](Request request, const auto& operation) {
+        client->block_next_request(request);
+        auto control = std::async(std::launch::async, operation);
+        bool ok = expect(client->wait_for_blocked_request(1s),
+                         "the receiver should enter the simulated lifecycle request");
+        auto audio = std::async(std::launch::async, [&] {
+            sessions.enqueue(packet, silence.data(), packet.bytes);
+        });
+        ok &= expect(audio.wait_for(1s) == std::future_status::ready,
+                     "a retained receiver should receive PCM while another receiver opens or closes");
+        client->release_blocked_request();
+        control.get();
+        audio.get();
+        return ok;
+    };
+
+    bool ok = verify_pcm_during_request(Request::Open, [&] {
+        sessions.open_for_outputs({living_room, kitchen}, format);
+    });
+    ok &= expect(sessions.ready_output_ids().contains(kitchen.id),
+                 "joining should publish the receiver only after setup finishes");
+    ok &= verify_pcm_during_request(Request::Close, [&] {
+        sessions.close_missing_outputs({living_room});
+    });
+    ok &= expect(sessions.ready_output_ids() == std::set<std::string>{living_room.id},
+                 "closed receivers should no longer accept PCM");
+
+    living_room.endpoint_port = 7502;
+    sessions.prepare_outputs({living_room});
+    sessions.open_for_outputs({living_room}, format);
+    ok &= expect(client->open_count() == 3,
+                 "preparing an existing receiver for a new endpoint must not mask its endpoint change");
     return ok;
 }
 
@@ -552,6 +607,18 @@ bool exercise_no_selected_outputs_sink() {
     ok &= expect(control_client->open_count() == 0, "no selected output sink should not open AirPlay sessions");
     ok &= expect(control_client->audio_packet_count() == 0, "no selected output sink should not send RTP packets");
     ok &= expect(transport.queued_packets().empty(), "no selected output sink should not queue packets");
+
+    engine.select_outputs({"living-room"});
+    transport.connect_selected_outputs();
+    engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+    const auto packets_sent = control_client->audio_packet_count();
+    transport.set_routed_outputs({});
+    engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+    ok &= expect(packets_sent > 0 && control_client->audio_packet_count() == packets_sent,
+                 "removing the current route must cut off PCM before the receiver has finished teardown");
+    transport.close_unselected_output_sessions({});
+    ok &= expect(control_client->close_count() == 1,
+                 "an unavailable replacement group should still close the previous receiver");
 
     engine.flush();
     ok &= expect(engine.current_frame() == 0, "no selected output sink flush should reset the stream clock");
@@ -1017,6 +1084,7 @@ int main() {
         ok &= exercise_airplay_remote_commands();
         ok &= exercise_volume_does_not_block_audio();
         ok &= exercise_metadata_does_not_block_audio();
+        ok &= exercise_session_reconfiguration_does_not_block_audio();
         ok &= exercise_speaker_groups();
         ok &= exercise_saved_output_preferences();
 
