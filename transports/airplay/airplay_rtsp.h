@@ -224,6 +224,13 @@ std::shared_ptr<AirPlayControlClient> make_airplay_loopback_control_client();
 
 double airplay_volume_db(int volume);
 std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata);
+
+struct AirPlayArtworkParameter {
+    std::string content_type;
+    std::string body;
+};
+
+AirPlayArtworkParameter make_airplay_artwork_parameter(const PlaybackMetadata& metadata);
 std::string make_airplay_progress_parameter_body(
     const PlaybackMetadata& metadata,
     uint32_t sample_rate,

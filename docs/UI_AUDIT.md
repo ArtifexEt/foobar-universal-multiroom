@@ -81,6 +81,11 @@ connect/send/receive immediately before the render worker is joined.
 
 ## Remaining work
 
+The full picker starts at 640 device-independent pixels and scales its type,
+hit areas, and controls together. It fits the monitor work area, stacks
+volume and delay on narrower displays, and keeps the footer visible while
+scrolling. Tab follows the speaker list and reveals the next control.
+
 These are product gaps, not fallbacks for broken AirPlay behavior:
 
 1. Verify live per-speaker latency offset changes in the picker with two

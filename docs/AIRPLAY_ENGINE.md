@@ -128,10 +128,11 @@ requests for:
 - DMAP-tagged title, artist, album, album artist, composer, genre, year,
   track/disc numbers, and duration;
 - RTP-relative progress state;
-- JPEG or PNG cover art, with WebP converted to JPEG by foobar's image helper.
+- JPEG or PNG cover art, with WebP converted to JPEG by foobar's image helper;
+- an empty `image/none` artwork request when no supported cover is available.
 
-A text update with `asac=0` is sent as soon as a new track starts, before its
-artwork finishes loading. This prevents a receiver from showing the previous
-session's cover. The latest metadata snapshot is retained by the transport and
-replayed when a speaker joins an already-open stream. Playback stop clears the
-receiver state before teardown.
+When the current track has no supported cover, `asac=0` accompanies an explicit
+artwork clear. If the artwork loader supplies a cover later, the updated
+snapshot sends its image bytes. The transport retains the latest snapshot and
+replays it when a speaker joins an already-open stream. Playback stop clears
+the receiver state before teardown.

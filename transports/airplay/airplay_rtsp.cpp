@@ -847,6 +847,11 @@ std::string header_value_from_message(const std::string& message, const std::str
     return {};
 }
 
+bool has_airplay_artwork(const PlaybackMetadata& metadata) {
+    return !metadata.artwork.empty() &&
+        (metadata.artwork_mime == "image/jpeg" || metadata.artwork_mime == "image/png");
+}
+
 }  // namespace
 
 double airplay_volume_db(int volume) {
@@ -880,8 +885,9 @@ std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
     append_dmap_u16(item, "astn", static_cast<uint16_t>((std::min)(metadata.track_number, static_cast<uint32_t>((std::numeric_limits<uint16_t>::max)()))));
     append_dmap_u16(item, "asdn", static_cast<uint16_t>((std::min)(metadata.disc_number, static_cast<uint32_t>((std::numeric_limits<uint16_t>::max)()))));
     append_dmap_u16(item, "asyr", static_cast<uint16_t>((std::min)(metadata.year, static_cast<uint32_t>((std::numeric_limits<uint16_t>::max)()))));
-    append_dmap_u16(item, "ased", metadata.artwork.empty() ? 0 : 1);
-    append_dmap_u16(item, "asac", metadata.artwork.empty() ? 0 : 1);
+    const uint16_t artwork_count = has_airplay_artwork(metadata) ? 1 : 0;
+    append_dmap_u16(item, "ased", artwork_count);
+    append_dmap_u16(item, "asac", artwork_count);
     append_dmap_string(item, "asfm", "wav");
     append_dmap_u16(item, "asbr", 1411);
     append_dmap_string(item, "asdt", "WAV audio file");
@@ -891,6 +897,15 @@ std::string make_airplay_dmap_metadata_body(const PlaybackMetadata& metadata) {
     append_dmap_header(body, "mlit", static_cast<uint32_t>(item.size()));
     body.insert(body.end(), item.begin(), item.end());
     return std::string(reinterpret_cast<const char*>(body.data()), body.size());
+}
+
+AirPlayArtworkParameter make_airplay_artwork_parameter(const PlaybackMetadata& metadata) {
+    if (!has_airplay_artwork(metadata)) {
+        return {"image/none", {}};
+    }
+
+    return {metadata.artwork_mime, std::string(
+        reinterpret_cast<const char*>(metadata.artwork.data()), metadata.artwork.size())};
 }
 
 std::string make_airplay_progress_parameter_body(
@@ -1246,22 +1261,24 @@ public:
             metadata_headers(rtsp_session_id, "application/x-dmap-tagged", rtp_info),
             make_airplay_dmap_metadata_body(metadata)));
 
-        if (!metadata.artwork.empty() &&
-            (metadata.artwork_mime == "image/jpeg" || metadata.artwork_mime == "image/png")) {
-            static_cast<void>(request_success(
-                "SET_PARAMETER",
-                stream_uri_,
-                metadata_headers(rtsp_session_id, metadata.artwork_mime, rtp_info),
-                std::string(
-                    reinterpret_cast<const char*>(metadata.artwork.data()),
-                    metadata.artwork.size())));
+        auto artwork = make_airplay_artwork_parameter(metadata);
+        auto artwork_headers = metadata_headers(rtsp_session_id, artwork.content_type, rtp_info);
+        if (artwork.body.empty()) {
+            // Receivers retain their last artwork unless it is explicitly cleared.
+            artwork_headers.emplace("Content-Length", "0");
         }
+        const auto artwork_response = request(
+            "SET_PARAMETER", stream_uri_, std::move(artwork_headers), std::move(artwork.body));
 
         static_cast<void>(request_success(
             "SET_PARAMETER",
             stream_uri_,
             metadata_headers(rtsp_session_id, "text/parameters", rtp_info),
             make_airplay_progress_parameter_body(metadata, stream_sample_rate_, current)));
+        if (!artwork_response.successful()) {
+            throw std::runtime_error("AirPlay artwork SET_PARAMETER failed with status " +
+                std::to_string(artwork_response.status_code) + " " + artwork_response.reason);
+        }
     }
 
     void clear_metadata(const std::string& rtsp_session_id) {
