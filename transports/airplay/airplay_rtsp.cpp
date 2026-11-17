@@ -2199,7 +2199,9 @@ private:
         const int result = setsockopt(handle, SOL_SOCKET, timeout_option,
             reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 #else
-        const timeval timeout{static_cast<time_t>(remaining / 1000), static_cast<long>((remaining % 1000) * 1000)};
+        timeval timeout{};
+        timeout.tv_sec = static_cast<decltype(timeout.tv_sec)>(remaining / 1000);
+        timeout.tv_usec = static_cast<decltype(timeout.tv_usec)>((remaining % 1000) * 1000);
         const int result = setsockopt(handle, SOL_SOCKET, timeout_option, &timeout, sizeof(timeout));
 #endif
         if (result != 0) {
