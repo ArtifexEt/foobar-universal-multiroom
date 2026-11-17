@@ -307,10 +307,10 @@ private:
         return 0;
     }
 
-    void configure_layout(const RECT& near, UINT dpi) {
+    void configure_layout(const RECT& reference_rect, UINT dpi) {
         MONITORINFO info = {};
         info.cbSize = sizeof(info);
-        if (::GetMonitorInfoW(::MonitorFromRect(&near, MONITOR_DEFAULTTONEAREST), &info)) {
+        if (::GetMonitorInfoW(::MonitorFromRect(&reference_rect, MONITOR_DEFAULTTONEAREST), &info)) {
             work_area_ = info.rcWork;
         } else {
             ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area_, 0);
