@@ -6,6 +6,7 @@
 #include <exception>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -20,6 +21,7 @@
 #include "../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../components/foo_out_multiroom_bridge/core/speaker_groups.h"
 #include "../components/foo_out_multiroom_bridge/core/volume_control.h"
+#include "../transports/airplay/airplay_timing.h"
 #include "../transports/airplay/airplay_transport.h"
 
 struct TransportCapability {
@@ -141,6 +143,13 @@ multiroom::OutputDevice make_airplay_loopback_output(
     return output;
 }
 
+std::string make_airplay_event_message(const fxchain::airplay::bplist::Value& event) {
+    const auto encoded = fxchain::airplay::bplist::encode(event);
+    const std::string body(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    return "POST /command RTSP/1.0\r\nCSeq: 7\r\nContent-Type: application/x-apple-binary-plist\r\nContent-Length: " +
+        std::to_string(body.size()) + "\r\n\r\n" + body;
+}
+
 std::string make_airplay_remote_command_message(
     int command,
     const std::string& command_id,
@@ -155,10 +164,7 @@ std::string make_airplay_remote_command_message(
     root.emplace_back("modernMediaRemoteCommand", Value::str(std::to_string(command)));
     root.emplace_back("type", Value::str(type));
     root.emplace_back("params", Value::object(std::move(params)));
-    const auto encoded = encode(Value::object(std::move(root)));
-    const std::string body(reinterpret_cast<const char*>(encoded.data()), encoded.size());
-    return "POST /command RTSP/1.0\r\nCSeq: 7\r\nContent-Type: application/x-apple-binary-plist\r\nContent-Length: " +
-        std::to_string(body.size()) + "\r\n\r\n" + body;
+    return make_airplay_event_message(Value::object(std::move(root)));
 }
 
 class SelectiveFailingControlClient final : public multiroom::airplay::AirPlayControlClient {
@@ -295,7 +301,7 @@ bool exercise_volume_does_not_block_audio() {
     packet.output_id = output.id;
     packet.bytes = silence.size() * sizeof(int16_t);
     packet.group_sync_anchor_valid = true;
-    packet.group_sync_start_rtp = 123456;
+    packet.group_sync_start_ntp = 123456;
     auto audio_write = std::async(std::launch::async, [&] {
         sessions.enqueue(packet, silence.data(), packet.bytes);
     });
@@ -373,6 +379,43 @@ bool exercise_airplay_remote_commands() {
                  received_event->command == AirPlayRemoteCommand::Stop &&
                  received_event->command_id == "loopback-stop",
                  "AirPlay transport should forward receiver playback commands to its consumer");
+
+    using namespace fxchain::airplay::bplist;
+    const auto parse_volume = [](Value volume, bool nested) {
+        Dict event{
+            {"type", Value::str("sendMediaRemoteCommand")},
+            {"value", Value::str("dvlc")},
+        };
+        if (nested) {
+            event.emplace_back("params", Value::object({{"volume", std::move(volume)}}));
+        } else {
+            event.emplace_back("volume", std::move(volume));
+        }
+        return multiroom::airplay::parse_airplay_remote_command_message(
+            make_airplay_event_message(Value::object(std::move(event))));
+    };
+
+    const auto device_volume = parse_volume(Value::real(0.416), true);
+    const auto minimum = parse_volume(Value::integer(0), false);
+    const auto maximum = parse_volume(Value::integer(1), true);
+    ok &= expect(device_volume && device_volume->command == AirPlayRemoteCommand::VolumeChanged &&
+                 device_volume->volume_percent == 42 &&
+                 minimum && minimum->volume_percent == 0 &&
+                 maximum && maximum->volume_percent == 100,
+                 "AirPlay receiver volume events should accept numeric values in both plist locations");
+    ok &= expect(!parse_volume(Value::real(-0.1), false) &&
+                 !parse_volume(Value::real(1.01), false) &&
+                 !parse_volume(Value::real((std::numeric_limits<double>::quiet_NaN)()), true) &&
+                 !parse_volume(Value::str("0.4"), true) &&
+                 !parse_volume(Value::boolean(true), false),
+                 "Malformed and out-of-range AirPlay receiver volume should be ignored");
+    if (device_volume) {
+        control_client->emit_remote_command("kitchen", *device_volume);
+        ok &= expect(received_output == "kitchen" && received_event &&
+                     received_event->command == AirPlayRemoteCommand::VolumeChanged &&
+                     received_event->volume_percent == 42,
+                     "Receiver volume feedback should identify the speaker that sent it");
+    }
     return ok;
 }
 
@@ -459,6 +502,71 @@ bool exercise_no_selected_outputs_sink() {
     engine.stop();
     ok &= expect(!engine.stream_open(), "no selected output sink stop should close the engine stream");
 
+    return ok;
+}
+
+bool exercise_airplay_group_timing() {
+    using multiroom::airplay::airplay_presentation_ntp;
+    using multiroom::airplay::current_ntp_timestamp;
+    using multiroom::airplay::ntp_interval;
+
+    constexpr auto anchor = uint64_t{10} << 32;
+    bool ok = expect(
+        airplay_presentation_ntp(anchor, 0, 44100, -500) == (uint64_t{19} << 31) &&
+            airplay_presentation_ntp(anchor, 22050, 44100, -500) == anchor &&
+            airplay_presentation_ntp(anchor, 48000, 48000, 250) == (uint64_t{45} << 30),
+        "signed offsets should move presentation time from the first frame at either sample rate");
+    ok &= expect(airplay_presentation_ntp(UINT64_MAX - (uint64_t{1} << 31) + 1, 22050, 44100, 0) == 0,
+                 "NTP arithmetic should cross the wire timestamp's era boundary");
+
+    auto client = std::make_shared<multiroom::airplay::AirPlayLoopbackControlClient>();
+    multiroom::airplay::AirPlayTransport transport(client);
+    multiroom::MultiroomEngine engine(transport);
+    transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7400));
+    transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7401));
+    engine.open_stream({44100, 2, 16});
+
+    const std::vector<int16_t> silence(704);
+    const auto bytes = silence.size() * sizeof(int16_t);
+    // A silent period before the first session must not acquire a stale anchor.
+    transport.write_frames(silence.data(), bytes, 0);
+    engine.select_outputs({"living-room"});
+    transport.connect_selected_outputs();
+    const auto before_send = current_ntp_timestamp();
+    constexpr uint64_t start_frame = 30 * 44100;
+    transport.write_frames(silence.data(), bytes, start_frame);
+    const auto after_send = current_ntp_timestamp();
+    const auto initial_packets = transport.queued_packets();
+    if (!expect(initial_packets.size() == 1, "the first active receiver should get one timing packet")) {
+        return false;
+    }
+    const auto& first = initial_packets.front();
+    const auto first_presentation = airplay_presentation_ntp(first.group_sync_start_ntp, start_frame, 44100, 0);
+    const auto minimum_lead = ntp_interval(250, 1000);
+    ok &= expect(first_presentation - before_send - minimum_lead <= after_send - before_send,
+                 "the first active receiver should establish the group anchor with network lead");
+
+    engine.select_outputs({"living-room", "kitchen"});
+    transport.connect_selected_outputs();
+    engine.set_output_offset_ms("kitchen", -500);
+    const auto next_frame = start_frame + 352;
+    transport.write_frames(silence.data(), bytes, next_frame);
+    bool joined_on_group_anchor = false;
+    for (const auto& packet : transport.queued_packets()) {
+        if (packet.output_id == "kitchen") {
+            joined_on_group_anchor = packet.stream_timestamp == next_frame && packet.offset_ms == -500 &&
+                packet.group_sync_start_ntp == first.group_sync_start_ntp;
+        }
+    }
+    ok &= expect(joined_on_group_anchor, "a joining receiver should keep the running group anchor");
+
+    engine.flush();
+    engine.write_interleaved_pcm(silence.data(), bytes);
+    const auto after_flush = transport.queued_packets();
+    ok &= expect(after_flush.size() == 2 && after_flush[0].stream_timestamp == 0 &&
+                 after_flush[0].group_sync_start_ntp == after_flush[1].group_sync_start_ntp &&
+                 after_flush[0].group_sync_start_ntp != first.group_sync_start_ntp,
+                 "flush should start a fresh anchor shared by both receivers");
     return ok;
 }
 
@@ -674,7 +782,7 @@ int main() {
             packets.size() == 2 &&
             packets[0].group_sync_anchor_valid &&
             packets[1].group_sync_anchor_valid &&
-            packets[0].group_sync_start_rtp == packets[1].group_sync_start_rtp,
+            packets[0].group_sync_start_ntp == packets[1].group_sync_start_ntp,
             "all selected receivers should use one shared group RTP/NTP timing anchor");
         ok &= expect(control_client->audio_packet_count() == 2, "one RTP audio packet should be sent for each selected output");
         ok &= expect(control_client->volume_set_count() == 3, "initial and updated AirPlay session volumes should be sent over RTSP");
@@ -703,6 +811,11 @@ int main() {
             multiroom::effective_output_volume_percent(50, 80) == 40 &&
             multiroom::effective_output_volume_percent(0, 100) == 0,
             "receiver attenuation should equal master volume multiplied by speaker volume");
+        ok &= expect(
+            multiroom::speaker_volume_from_receiver_percent(50, 40) == 80 &&
+            multiroom::speaker_volume_from_receiver_percent(50, 65) == 100 &&
+            !multiroom::speaker_volume_from_receiver_percent(0, 45),
+            "receiver volume should map to the speaker ratio without dividing by a muted master");
         ok &= expect(std::abs(multiroom::airplay::airplay_volume_db(0) - (-144.0)) < 0.0001 &&
                      std::abs(multiroom::airplay::airplay_volume_db(50) - (-15.0)) < 0.0001 &&
                      std::abs(multiroom::airplay::airplay_volume_db(100)) < 0.0001,
@@ -732,8 +845,12 @@ int main() {
         }
         ok &= expect(sessions_ready, "selected AirPlay sessions should negotiate a ready PCM stream");
 
+        transport.set_initial_output_volume("living-room", 30);
         engine.select_outputs({"living-room", "kitchen"});
+        transport.connect_selected_outputs();
         ok &= expect(transport.queued_packets().size() == 2, "reselecting ready sessions should preserve queued packets");
+        ok &= expect(control_client->volume_set_count() == 3,
+                     "reselecting an active speaker should not reset the receiver's current volume");
 
         bool saw_kitchen_offset = false;
         for (const auto& packet : packets) {
@@ -750,6 +867,16 @@ int main() {
         }
         ok &= expect(saw_kitchen_offset, "12 ms kitchen offset at 48 kHz should be 576 frames");
 
+        uint64_t last_packet_timestamp = 0;
+        for (int index = 0; index < 300; ++index) {
+            last_packet_timestamp = engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+        }
+        for (const auto& session : transport.sessions()) {
+            ok &= expect(session.queued_packets.size() == 256 &&
+                         session.queued_packets.back().stream_timestamp == last_packet_timestamp,
+                         "long playback should retain only the most recent diagnostic packets per speaker");
+        }
+
         engine.flush();
         ok &= expect(transport.queued_packets().empty(), "flush should clear queued packets");
         ok &= expect(engine.current_frame() == 0, "flush should reset stream clock");
@@ -763,6 +890,7 @@ int main() {
         ok &= expect(control_client->close_count() == 2, "stop should close each AirPlay control session");
         ok &= exercise_partial_airplay_open_failure();
         ok &= exercise_no_selected_outputs_sink();
+        ok &= exercise_airplay_group_timing();
         ok &= exercise_cancelled_airplay_open();
         ok &= exercise_failed_reselection_does_not_drop_pcm();
         ok &= exercise_output_registry_retain();

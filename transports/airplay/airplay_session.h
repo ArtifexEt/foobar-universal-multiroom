@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -35,7 +36,7 @@ struct AirPlaySessionState {
     std::vector<std::string> rtsp_supported_methods;
     AirPlayTransportPorts transport_ports;
     std::string last_error;
-    std::vector<ScheduledPacket> queued_packets;
+    std::deque<ScheduledPacket> queued_packets;
 };
 
 class AirPlaySessionManager {

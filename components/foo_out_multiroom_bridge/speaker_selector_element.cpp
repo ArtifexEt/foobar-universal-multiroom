@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <cwctype>
 #include <iterator>
 #include <sstream>
@@ -27,6 +28,7 @@ static constexpr UINT_PTR kVolumeLabelBase = 33000;
 static constexpr UINT_PTR kRefreshTimer = 34000;
 static constexpr UINT_PTR kToolbarRefreshTimer = 34001;
 static constexpr UINT_PTR kGroupComboId = 35000;
+static constexpr UINT_PTR kSpeakerOffsetBase = 36000;
 static constexpr int kPopupWidth = 408;
 static constexpr int kPopupPadding = 22;
 static constexpr int kHeaderHeight = 112;
@@ -85,6 +87,14 @@ std::string outputs_signature(const std::vector<multiroom::OutputDevice>& output
                << output.name << '|'
                << output.selected << '|'
                << output.volume << '|'
+               << output.receiver_volume_percent.value_or(-1) << '|'
+               << output.offset_ms << '|'
+               << output.playback_ready << '|'
+               << output.playback_error << '|'
+               << output.has_password << '|'
+               << output.supports_airplay2 << '|'
+               << output.supports_legacy_l16 << '|'
+               << output.requires_auth << '|'
                << output.endpoint_host << '|'
                << output.endpoint_port << '|'
                << output.format << ';';
@@ -103,11 +113,28 @@ bool output_playable(const multiroom::OutputDevice& output) {
 }
 
 std::wstring output_status_label(const multiroom::OutputDevice& output) {
-    if (output.endpoint_host.empty() || output.endpoint_port == 0) return L"No endpoint";
-    if (output.supports_airplay2) return volume_label(output.volume);
-    if (output.supports_legacy_l16) return L"Legacy";
-    if (output.requires_auth) return L"Auth required";
-    return volume_label(output.volume);
+    if (output.endpoint_host.empty() || output.endpoint_port == 0) return L"No network address. Refresh Speakers & TVs.";
+    if (!output.playback_error.empty()) return widen_utf8(output.playback_error);
+    if (output.playback_ready) {
+        if (output.receiver_volume_percent && *output.receiver_volume_percent != output.volume) {
+            return L"Receiver volume " + volume_label(*output.receiver_volume_percent);
+        }
+        return L"Connected";
+    }
+    if (output.supports_airplay2) return {};
+    if (output.supports_legacy_l16) return L"Legacy AirPlay only";
+    if (output.requires_auth) return L"Unsupported AirPlay authentication";
+    return L"AirPlay 2 unavailable";
+}
+
+bool same_speaker_rows(
+    const std::vector<multiroom::OutputDevice>& current,
+    const std::vector<multiroom::OutputDevice>& updated) {
+    return std::equal(current.begin(), current.end(), updated.begin(), updated.end(),
+        [](const auto& left, const auto& right) {
+            return left.id == right.id && left.name == right.name &&
+                left.has_password == right.has_password && output_playable(left) == output_playable(right);
+        });
 }
 
 COLORREF blend_color(COLORREF from, COLORREF to, int amount_percent) {
@@ -399,6 +426,15 @@ private:
             const auto name = widen_utf8(output.name.empty() ? output.id : output.name);
             dc.SetTextColor(foreground);
             CRect name_rect(rc.left + 42, rc.top, rc.right - 38, rc.bottom);
+            const auto status = output_status_label(output);
+            if (!status.empty()) {
+                CRect status_rect(name_rect);
+                name_rect.bottom = center_y;
+                status_rect.top = center_y;
+                dc.SetTextColor(secondary_text_color());
+                WIN32_OP_D(dc.DrawTextW(status.c_str(), -1, &status_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
+                dc.SetTextColor(foreground);
+            }
             WIN32_OP_D(dc.DrawTextW(name.c_str(), -1, &name_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
         } else if (item->CtlID == kRefreshCommand) {
             const bool pressed = (item->itemState & ODS_SELECTED) != 0;
@@ -483,11 +519,23 @@ private:
         return CDRF_SKIPDEFAULT;
     }
 
-    LRESULT on_command(UINT, WPARAM wp, LPARAM, BOOL&) {
+    LRESULT on_command(UINT, WPARAM wp, LPARAM lp, BOOL&) {
         const auto id = static_cast<UINT_PTR>(LOWORD(wp));
         const auto code = HIWORD(wp);
 
+        if (id >= kSpeakerOffsetBase && id < kSpeakerOffsetBase + outputs_.size()) {
+            const auto edit = reinterpret_cast<HWND>(lp);
+            if (code == EN_SETFOCUS) {
+                offset_edit_ = edit;
+                ::SendMessageW(edit, EM_SETSEL, 0, -1);
+            } else if (code == EN_KILLFOCUS && edit == offset_edit_) {
+                finish_offset_edit();
+            }
+            return 0;
+        }
+
         if (id == kRefreshCommand && code == BN_CLICKED) {
+            finish_offset_edit();
             MultiroomComponentState::instance().refresh_outputs();
             outputs_ = MultiroomComponentState::instance().outputs();
             status_ = MultiroomComponentState::instance().status_text();
@@ -506,6 +554,7 @@ private:
         }
 
         if (id == kGroupComboId && code == CBN_SELCHANGE) {
+            finish_offset_edit();
             HWND combo = ::GetDlgItem(m_hWnd, static_cast<int>(kGroupComboId));
             const int selected = combo != nullptr ? static_cast<int>(::SendMessageW(combo, CB_GETCURSEL, 0, 0)) : 0;
             if (selected > 0 && selected <= static_cast<int>(groups_.size())) {
@@ -523,6 +572,7 @@ private:
         }
 
         if (id >= kSpeakerCheckBase && id < kSpeakerCheckBase + outputs_.size() && code == BN_CLICKED) {
+            finish_offset_edit();
             const auto index = static_cast<size_t>(id - kSpeakerCheckBase);
             MultiroomComponentState::instance().toggle_output(outputs_[index].id);
             outputs_ = MultiroomComponentState::instance().outputs();
@@ -550,20 +600,23 @@ private:
         const auto signature = outputs_signature(outputs);
         const auto group_signature = groups_signature(groups);
         if (signature != outputs_signature_ || group_signature != groups_signature_ || status != status_) {
+            const bool rebuild = !same_speaker_rows(outputs_, outputs) ||
+                group_signature != groups_signature_ || (outputs.empty() && status != status_);
+            if (rebuild && offset_edit_ != nullptr) return 0;
+
             outputs_ = outputs;
             groups_ = groups;
             status_ = status;
             outputs_signature_ = signature;
             groups_signature_ = group_signature;
-            rebuild_controls();
-            resize_to_content();
+            if (rebuild) {
+                rebuild_controls();
+                resize_to_content();
+            } else {
+                sync_control_values();
+            }
             redraw_all();
             if (owner_ != nullptr) ::InvalidateRect(owner_, nullptr, TRUE);
-        }
-
-        if (!MultiroomComponentState::instance().refresh_in_progress() &&
-            !MultiroomComponentState::instance().control_in_progress()) {
-            KillTimer(kRefreshTimer);
         }
         return 0;
     }
@@ -639,6 +692,7 @@ private:
 
     LRESULT on_activate(UINT, WPARAM wp, LPARAM, BOOL&) {
         if (LOWORD(wp) == WA_INACTIVE) {
+            finish_offset_edit();
             DestroyWindow();
         }
         return 0;
@@ -653,6 +707,7 @@ private:
     }
 
     void rebuild_controls() {
+        finish_offset_edit();
         for (HWND control : controls_) {
             if (control != nullptr && ::IsWindow(control)) {
                 ::DestroyWindow(control);
@@ -679,14 +734,10 @@ private:
             core_api::get_my_instance(),
             nullptr));
         ::SendMessageW(group_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Choose a speaker group..."));
-        const auto active_group_id = MultiroomComponentState::instance().active_speaker_group_id();
-        int active_group_index = 0;
-        for (int index = 0; index < static_cast<int>(groups_.size()); ++index) {
-            const auto label = L"Group: " + widen_utf8(groups_[static_cast<size_t>(index)].name);
+        for (const auto& group : groups_) {
+            const auto label = L"Group: " + widen_utf8(group.name);
             ::SendMessageW(group_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-            if (groups_[static_cast<size_t>(index)].id == active_group_id) active_group_index = index + 1;
         }
-        ::SendMessageW(group_combo, CB_SETCURSEL, active_group_index, 0);
 
         if (outputs_.empty()) {
             add_control(::CreateWindowExW(
@@ -828,7 +879,7 @@ private:
         const bool playable = output_playable(output);
         const int width = client_width();
 
-        HWND check = add_control(::CreateWindowExW(
+        add_control(::CreateWindowExW(
             0,
             L"BUTTON",
             name.c_str(),
@@ -842,14 +893,20 @@ private:
             core_api::get_my_instance(),
             nullptr));
 
+        if (!playable) return;
+
+        const int row_right = width - kPopupPadding;
+        const int slider_left = kPopupPadding + 42;
+        const int volume_label_left = row_right - 171;
+
         HWND slider = add_control(::CreateWindowExW(
             0,
             TRACKBAR_CLASSW,
             nullptr,
-            WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_TRANSPARENTBKGND | (playable ? 0 : WS_DISABLED),
-            kPopupPadding + 42,
+            WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_TRANSPARENTBKGND,
+            slider_left,
             row_top + 42,
-            width - 164,
+            volume_label_left - slider_left - 4,
             24,
             m_hWnd,
             reinterpret_cast<HMENU>(kSpeakerVolumeBase + index),
@@ -861,9 +918,9 @@ private:
             L"STATIC",
             L"",
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
-            width - kPopupPadding - 68,
+            volume_label_left,
             row_top + 44,
-            68,
+            36,
             20,
             m_hWnd,
             reinterpret_cast<HMENU>(kVolumeLabelBase + index),
@@ -872,12 +929,81 @@ private:
 
         volume_labels_[index] = label;
 
-        ::SendMessageW(check, BM_SETCHECK, output.selected ? BST_CHECKED : BST_UNCHECKED, 0);
         ::SendMessageW(slider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
         ::SendMessageW(slider, TBM_SETPAGESIZE, 0, 10);
-        ::SendMessageW(slider, TBM_SETPOS, TRUE, output.volume);
-        const auto text = output_status_label(output);
-        ::SetWindowTextW(label, text.c_str());
+
+        add_control(::CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Offset (ms)",
+            WS_CHILD | WS_VISIBLE | SS_RIGHT,
+            row_right - 127,
+            row_top + 44,
+            66,
+            20,
+            m_hWnd,
+            nullptr,
+            core_api::get_my_instance(),
+            nullptr));
+
+        const HWND edit = add_control(::CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_AUTOHSCROLL,
+            row_right - 55,
+            row_top + 40,
+            55,
+            24,
+            m_hWnd,
+            reinterpret_cast<HMENU>(kSpeakerOffsetBase + index),
+            core_api::get_my_instance(),
+            nullptr));
+        ::SendMessageW(edit, EM_SETLIMITTEXT, 5, 0);
+        WIN32_OP_D(::SetWindowSubclass(edit, offset_edit_key, 0, reinterpret_cast<DWORD_PTR>(this)) != FALSE);
+    }
+
+    static LRESULT CALLBACK offset_edit_key(
+        HWND edit, UINT message, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR data) {
+        if (message == WM_NCDESTROY) {
+            ::RemoveWindowSubclass(edit, offset_edit_key, subclass_id);
+        }
+        if ((message == WM_KEYDOWN || message == WM_CHAR) && (wp == VK_RETURN || wp == VK_ESCAPE)) {
+            if (message == WM_KEYDOWN) {
+                auto& popup = *reinterpret_cast<SpeakerPickerPopup*>(data);
+                popup.finish_offset_edit(wp == VK_RETURN);
+                popup.SetFocus();
+            }
+            return 0;
+        }
+        return ::DefSubclassProc(edit, message, wp, lp);
+    }
+
+    void finish_offset_edit(bool commit = true) {
+        if (offset_edit_ == nullptr) return;
+
+        const HWND edit = offset_edit_;
+        offset_edit_ = nullptr;
+        const auto id = static_cast<UINT_PTR>(::GetDlgCtrlID(edit));
+        if (id < kSpeakerOffsetBase || id >= kSpeakerOffsetBase + outputs_.size()) return;
+
+        auto& output = outputs_[id - kSpeakerOffsetBase];
+        if (commit) {
+            const auto text = text_from_window(edit);
+            wchar_t* end = nullptr;
+            const auto parsed = std::wcstol(text.c_str(), &end, 10);
+            if (end != text.c_str() && *end == L'\0') {
+                constexpr long limit = multiroom::kMaxOutputOffsetMs;
+                const auto offset_ms = static_cast<int>(std::clamp(parsed, -limit, limit));
+                if (offset_ms != output.offset_ms) {
+                    MultiroomComponentState::instance().set_output_offset_ms(output.id, offset_ms);
+                    output.offset_ms = offset_ms;
+                    outputs_signature_ = outputs_signature(outputs_);
+                }
+            }
+        }
+        const auto offset = std::to_wstring(output.offset_ms);
+        ::SetWindowTextW(edit, offset.c_str());
     }
 
     HWND add_control(HWND control) {
@@ -888,6 +1014,16 @@ private:
     }
 
     void sync_control_values() {
+        if (HWND combo = ::GetDlgItem(m_hWnd, static_cast<int>(kGroupComboId));
+            combo != nullptr && ::SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) == FALSE) {
+            const auto active_group_id = MultiroomComponentState::instance().active_speaker_group_id();
+            const auto group = std::find_if(groups_.begin(), groups_.end(), [&](const auto& entry) {
+                return entry.id == active_group_id;
+            });
+            const auto index = group == groups_.end() ? 0 : std::distance(groups_.begin(), group) + 1;
+            ::SendMessageW(combo, CB_SETCURSEL, index, 0);
+        }
+
         for (size_t index = 0; index < outputs_.size(); ++index) {
             if (HWND check = ::GetDlgItem(m_hWnd, static_cast<int>(kSpeakerCheckBase + index))) {
                 ::SendMessageW(check, BM_SETCHECK, outputs_[index].selected ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -896,8 +1032,12 @@ private:
                 ::SendMessageW(slider, TBM_SETPOS, TRUE, outputs_[index].volume);
             }
             if (index < volume_labels_.size() && volume_labels_[index] != nullptr) {
-                const auto text = output_status_label(outputs_[index]);
+                const auto text = volume_label(outputs_[index].volume);
                 ::SetWindowTextW(volume_labels_[index], text.c_str());
+            }
+            if (HWND edit = ::GetDlgItem(m_hWnd, static_cast<int>(kSpeakerOffsetBase + index)); edit != nullptr && edit != offset_edit_) {
+                const auto offset = std::to_wstring(outputs_[index].offset_ms);
+                ::SetWindowTextW(edit, offset.c_str());
             }
         }
     }
@@ -940,6 +1080,8 @@ private:
     }
 
     void set_first_visible_row(int row) {
+        if (volume_drag_active_) return;
+
         const auto clamped = static_cast<size_t>(
             std::clamp(row, 0, static_cast<int>(max_first_visible_row())));
         if (clamped == first_visible_row_) return;
@@ -1054,6 +1196,7 @@ private:
     std::string groups_signature_;
     std::vector<HWND> controls_;
     std::vector<HWND> volume_labels_;
+    HWND offset_edit_ = nullptr;
     CFont title_font_;
     CFont section_font_;
     CBrush background_brush_;

@@ -31,7 +31,12 @@ struct StoredOutputState {
     bool selected = false;
     int volume = 50;
     bool visible_in_dropdown = true;
+    int offset_ms = 0;
 };
+
+int clamp_output_offset_ms(int offset_ms) {
+    return std::clamp(offset_ms, -multiroom::kMaxOutputOffsetMs, multiroom::kMaxOutputOffsetMs);
+}
 
 std::wstring widen_utf8(const std::string& text) {
     if (text.empty()) return {};
@@ -111,9 +116,8 @@ std::vector<StoredOutputState> parse_output_state_text(const std::string& text) 
     std::string line;
     while (std::getline(lines, line)) {
         const auto fields = split_pipe_fields(line);
-        // The fourth field was added after the original selected/volume
-        // format. Existing three-field settings migrate as visible.
-        if ((fields.size() != 3 && fields.size() != 4) || fields[0].empty()) {
+        // Older settings default to a visible speaker and zero offset.
+        if (fields.size() < 3 || fields.size() > 5 || fields[0].empty()) {
             continue;
         }
 
@@ -127,6 +131,10 @@ std::vector<StoredOutputState> parse_output_state_text(const std::string& text) 
         item.selected = fields[1] == "1";
         item.volume = std::clamp(volume, 0, 100);
         item.visible_in_dropdown = fields.size() < 4 || fields[3] != "0";
+        int offset_ms = 0;
+        if (fields.size() == 5 && parse_int_field(fields[4], offset_ms)) {
+            item.offset_ms = clamp_output_offset_ms(offset_ms);
+        }
         result.push_back(std::move(item));
     }
     return result;
@@ -141,7 +149,8 @@ std::string format_output_state_text(const std::vector<StoredOutputState>& state
         out << state.output_id << '|'
             << (state.selected ? '1' : '0') << '|'
             << std::clamp(state.volume, 0, 100) << '|'
-            << (state.visible_in_dropdown ? '1' : '0') << '\n';
+            << (state.visible_in_dropdown ? '1' : '0') << '|'
+            << state.offset_ms << '\n';
     }
     return out.str();
 }
@@ -152,9 +161,8 @@ std::vector<StoredOutputState> load_output_state() {
 }
 
 void update_stored_output_state(const multiroom::OutputDevice& output) {
-    // Selection, volume, and dropdown visibility can be updated by different
-    // UI/worker threads. Keep the read-modify-write transaction under one lock
-    // so one preference cannot overwrite another with an older snapshot.
+    // Callers hold the component mutex to persist the same state they publish
+    // to the UI. This lock also guards readers of the serialized settings.
     std::lock_guard lock(cfg_airplay_output_state_mutex);
     auto states = parse_output_state_text(cfg_airplay_output_state.get().c_str());
     states.erase(
@@ -171,6 +179,7 @@ void update_stored_output_state(const multiroom::OutputDevice& output) {
     updated.selected = output.selected;
     updated.volume = std::clamp(output.volume, 0, 100);
     updated.visible_in_dropdown = output.visible_in_dropdown;
+    updated.offset_ms = clamp_output_offset_ms(output.offset_ms);
 
     if (it == states.end()) {
         states.push_back(std::move(updated));
@@ -195,6 +204,7 @@ void apply_stored_output_state(std::vector<multiroom::OutputDevice>& outputs) {
         output.selected = it->selected;
         output.volume = it->volume;
         output.visible_in_dropdown = it->visible_in_dropdown;
+        output.offset_ms = it->offset_ms;
         if (it->output_id != output.id) {
             update_stored_output_state(output);
         }
@@ -324,7 +334,43 @@ void preserve_user_output_state(
         output.volume = it->volume;
         output.offset_ms = it->offset_ms;
         output.measured_latency_ms = it->measured_latency_ms;
+        output.receiver_volume_percent = it->receiver_volume_percent;
         output.visible_in_dropdown = it->visible_in_dropdown;
+        output.playback_ready = it->playback_ready;
+        output.playback_error = it->playback_error;
+    }
+}
+
+std::vector<std::wstring> apply_session_status(
+    std::vector<multiroom::OutputDevice>& outputs,
+    const std::vector<multiroom::airplay::AirPlaySessionState>& sessions) {
+    using multiroom::airplay::AirPlaySessionPhase;
+    std::vector<std::wstring> active_output_names;
+    for (auto& output : outputs) {
+        output.playback_ready = false;
+        const auto session = std::find_if(sessions.begin(), sessions.end(), [&](const auto& candidate) {
+            return candidate.output_id == output.id;
+        });
+        if (session == sessions.end() || session->phase == AirPlaySessionPhase::Closed) {
+            output.receiver_volume_percent.reset();
+            continue;
+        }
+        output.playback_ready = session->open && session->phase == AirPlaySessionPhase::Ready;
+        output.playback_error.clear();
+        if (output.playback_ready) {
+            active_output_names.push_back(widen_utf8(output.name.empty() ? output.id : output.name));
+        } else {
+            output.receiver_volume_percent.reset();
+            if (session->phase == AirPlaySessionPhase::Failed) output.playback_error = session->last_error;
+        }
+    }
+    return active_output_names;
+}
+
+void clear_output_playback_state(std::vector<multiroom::OutputDevice>& outputs) {
+    for (auto& output : outputs) {
+        output.playback_ready = false;
+        output.receiver_volume_percent.reset();
     }
 }
 
@@ -346,6 +392,7 @@ const char* remote_command_name(multiroom::airplay::AirPlayRemoteCommand command
     case AirPlayRemoteCommand::Stop: return "stop";
     case AirPlayRemoteCommand::NextTrack: return "next";
     case AirPlayRemoteCommand::PreviousTrack: return "previous";
+    case AirPlayRemoteCommand::VolumeChanged: return "volume-changed";
     }
     return "unknown";
 }
@@ -424,6 +471,10 @@ void MultiroomComponentState::handle_remote_command(
     if (shutting_down_.load()) {
         return;
     }
+    if (event.command == multiroom::airplay::AirPlayRemoteCommand::VolumeChanged) {
+        apply_receiver_volume(output_id, event.volume_percent);
+        return;
+    }
 
     if (!event.command_id.empty()) {
         std::lock_guard lock(mutex_);
@@ -472,12 +523,37 @@ void MultiroomComponentState::handle_remote_command(
             case AirPlayRemoteCommand::PreviousTrack:
                 control->start(playback_control::track_command_prev);
                 break;
+            case AirPlayRemoteCommand::VolumeChanged:
+                break;
             }
         } catch (const std::exception& e) {
             FB2K_console_formatter() << "[Universal Multiroom] Could not apply AirPlay remote command: "
                                       << e.what();
         }
     });
+}
+
+void MultiroomComponentState::apply_receiver_volume(const std::string& output_id, int volume_percent) {
+    std::lock_guard lock(mutex_);
+    if (shutting_down_.load() || !playback_open_.load() ||
+        control_volume_update_ids_.contains(output_id) || control_sending_volume_ids_.contains(output_id)) {
+        return;
+    }
+
+    const auto output = std::find_if(cached_outputs_.begin(), cached_outputs_.end(), [&](const auto& candidate) {
+        return candidate.id == output_id && candidate.selected;
+    });
+    if (output == cached_outputs_.end()) {
+        return;
+    }
+
+    const auto configured_volume =
+        multiroom::speaker_volume_from_receiver_percent(master_volume_percent_, volume_percent);
+    if (configured_volume && output->volume != *configured_volume) {
+        output->volume = *configured_volume;
+        update_stored_output_state(*output);
+    }
+    output->receiver_volume_percent = volume_percent;
 }
 
 void MultiroomComponentState::ensure_discovery_started() {
@@ -544,7 +620,11 @@ void MultiroomComponentState::refresh_outputs_worker() {
             }
             transport_.refresh_discovery();
             refreshed_outputs = transport_.list_outputs();
-            apply_stored_output_state(refreshed_outputs);
+            {
+                std::lock_guard lock(mutex_);
+                apply_stored_output_state(refreshed_outputs);
+                cached_outputs_ = refreshed_outputs;
+            }
             refresh_ok = true;
         } catch (const std::exception& e) {
             refresh_error_narrow = e.what();
@@ -557,7 +637,6 @@ void MultiroomComponentState::refresh_outputs_worker() {
             ++refresh_count_;
             refresh_number = refresh_count_;
             if (refresh_ok) {
-                cached_outputs_ = refreshed_outputs;
                 last_error_.clear();
             } else {
                 last_error_ = std::move(refresh_error);
@@ -628,7 +707,10 @@ void MultiroomComponentState::refresh_outputs_for_playback() {
                 }
                 transport_.refresh_discovery(std::chrono::milliseconds(250));
                 refreshed_outputs = transport_.list_outputs();
-                apply_stored_output_state(refreshed_outputs);
+                {
+                    std::lock_guard lock(mutex_);
+                    apply_stored_output_state(refreshed_outputs);
+                }
                 if (!saved_selection_expected || !selected_ids(refreshed_outputs).empty()) {
                     break;
                 }
@@ -644,6 +726,7 @@ void MultiroomComponentState::refresh_outputs_for_playback() {
         std::lock_guard lock(mutex_);
         ++refresh_count_;
         refresh_number = refresh_count_;
+        apply_stored_output_state(refreshed_outputs);
         cached_outputs_ = std::move(refreshed_outputs);
         last_error_.clear();
     }
@@ -668,12 +751,25 @@ void MultiroomComponentState::schedule_control_update() {
     control_thread_ = std::thread(&MultiroomComponentState::control_update_worker, this);
 }
 
-void MultiroomComponentState::schedule_volume_update(const std::vector<std::string>& ids) {
-    if (ids.empty()) return;
-
+void MultiroomComponentState::schedule_volume_update() {
     {
         std::lock_guard lock(mutex_);
-        control_volume_update_ids_.insert(ids.begin(), ids.end());
+        if (control_in_progress_ || control_volume_update_ids_.empty()) {
+            return;
+        }
+        control_in_progress_ = true;
+    }
+
+    if (control_thread_.joinable()) {
+        control_thread_.join();
+    }
+    control_thread_ = std::thread(&MultiroomComponentState::control_update_worker, this);
+}
+
+void MultiroomComponentState::schedule_offset_update() {
+    {
+        std::lock_guard lock(mutex_);
+        control_offset_update_requested_ = true;
         if (control_in_progress_) {
             return;
         }
@@ -725,6 +821,7 @@ void MultiroomComponentState::control_update_worker() {
         int master_volume_snapshot = 100;
         bool should_connect = false;
         bool full_update = false;
+        bool offset_update_requested = false;
         bool metadata_active = false;
         bool metadata_update_requested = false;
         {
@@ -737,7 +834,10 @@ void MultiroomComponentState::control_update_worker() {
             control_metadata_update_requested_ = false;
             full_update = control_full_update_requested_;
             control_full_update_requested_ = false;
+            offset_update_requested = control_offset_update_requested_;
+            control_offset_update_requested_ = false;
             volume_update_ids.swap(control_volume_update_ids_);
+            control_sending_volume_ids_ = volume_update_ids;
             should_connect = playback_open_.load() && playback_format_valid_;
             if (should_connect) {
                 playback_format_snapshot = playback_format_;
@@ -749,23 +849,18 @@ void MultiroomComponentState::control_update_worker() {
         bool control_ok = false;
 
         try {
-            if (!full_update) {
-                // Receiver volume is a control-plane operation. It must not own
-                // the PCM transport lock while waiting for an RTSP round trip.
-                for (const auto& output : outputs_snapshot) {
-                    if (volume_update_ids.find(output.id) == volume_update_ids.end()) continue;
-                    transport_.set_session_volume(
-                        output.id,
-                        effective_remote_volume(output.volume, master_volume_snapshot));
-                }
-            }
-            if (full_update || metadata_update_requested) {
+            if (full_update || metadata_update_requested || offset_update_requested) {
                 ensure_discovery_started();
                 std::lock_guard transport_lock(transport_mutex_);
                 // Stop may have completed after the snapshot was taken while this
                 // worker waited for the transport. Never reopen a receiver for a
                 // stream which foobar has already closed.
                 should_connect = should_connect && playback_open_.load();
+                if (full_update || offset_update_requested) {
+                    for (const auto& output : outputs_snapshot) {
+                        transport_.set_output_offset_ms(output.id, output.offset_ms);
+                    }
+                }
                 if (full_update || metadata_update_requested) {
                     if (metadata_active) {
                         transport_.set_playback_metadata(metadata_snapshot);
@@ -777,7 +872,8 @@ void MultiroomComponentState::control_update_worker() {
                     const auto selected = selected_ids(outputs_snapshot);
                     transport_.set_enabled_outputs(selected);
                     for (const auto& output : outputs_snapshot) {
-                        transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
+                        transport_.set_initial_output_volume(
+                            output.id, effective_remote_volume(output.volume, master_volume_snapshot));
                     }
                     const auto previous_outputs = outputs_snapshot;
                     if (should_connect) {
@@ -793,45 +889,42 @@ void MultiroomComponentState::control_update_worker() {
                     preserve_user_output_state(outputs_snapshot, previous_outputs);
                 }
             }
+            // Selection only configures gain for newly opened sessions. Explicit
+            // local volume edits can update an existing session without the PCM lock.
+            for (const auto& output : outputs_snapshot) {
+                if (!volume_update_ids.contains(output.id)) continue;
+                transport_.set_session_volume(
+                    output.id, effective_remote_volume(output.volume, master_volume_snapshot));
+            }
             control_ok = true;
         } catch (const std::exception& e) {
             control_error_narrow = e.what();
             control_error = widen_utf8(e.what());
         }
 
-        std::vector<std::wstring> active_output_names;
-        if (control_ok && should_connect && full_update) {
+        std::vector<multiroom::airplay::AirPlaySessionState> sessions_snapshot;
+        if (should_connect && full_update) {
             std::lock_guard transport_lock(transport_mutex_);
-            for (const auto& session : transport_.sessions()) {
-                if (session.open && session.phase == multiroom::airplay::AirPlaySessionPhase::Ready) {
-                    active_output_names.push_back(widen_utf8(
-                        session.output_name.empty() ? session.output_id : session.output_name));
-                }
-            }
+            should_connect = playback_open_.load();
+            if (should_connect) sessions_snapshot = transport_.sessions();
         }
 
         bool destination_label_changed = false;
         {
             std::lock_guard lock(mutex_);
+            control_sending_volume_ids_.clear();
             if (control_ok) {
                 if (full_update) {
                     preserve_user_output_state(outputs_snapshot, cached_outputs_);
                     cached_outputs_ = outputs_snapshot;
-                    if (should_connect) {
-                        active_output_names_ = std::move(active_output_names);
-                        destination_label_changed = true;
-                    }
                 }
                 last_error_.clear();
             } else {
-                // set_enabled_outputs() closes sessions which are no longer
-                // selected before a replacement is opened. Never keep
-                // advertising those old sessions when the replacement fails.
-                if (full_update && should_connect) {
-                    active_output_names_.clear();
-                    destination_label_changed = true;
-                }
                 last_error_ = std::move(control_error);
+            }
+            if (full_update && should_connect && playback_open_.load()) {
+                active_output_names_ = apply_session_status(cached_outputs_, sessions_snapshot);
+                destination_label_changed = true;
             }
         }
 
@@ -850,6 +943,7 @@ void MultiroomComponentState::control_update_worker() {
         {
             std::lock_guard lock(mutex_);
             run_again = control_full_update_requested_ ||
+                control_offset_update_requested_ ||
                 !control_volume_update_ids_.empty() ||
                 control_metadata_update_requested_;
             if (!run_again) {
@@ -929,6 +1023,10 @@ void MultiroomComponentState::pairing_worker(std::string id, std::string pin) {
     {
         std::lock_guard lock(mutex_);
         pairing_in_progress_ = false;
+        const auto output = std::find_if(cached_outputs_.begin(), cached_outputs_.end(), [&](const auto& candidate) {
+            return candidate.id == id;
+        });
+        if (output != cached_outputs_.end()) output->playback_error = pairing_error_narrow;
         if (pairing_ok) {
             last_error_.clear();
         } else {
@@ -949,7 +1047,6 @@ void MultiroomComponentState::pairing_worker(std::string id, std::string pin) {
 
 void MultiroomComponentState::toggle_output(const std::string& id) {
     try {
-        multiroom::OutputDevice updated_output;
         bool changed = false;
         {
             std::lock_guard lock(mutex_);
@@ -961,13 +1058,14 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
             }
             if (output_it != cached_outputs_.end()) {
                 output_it->selected = !output_it->selected;
-                updated_output = *output_it;
+                output_it->playback_error.clear();
+                if (!output_it->selected) output_it->receiver_volume_percent.reset();
+                update_stored_output_state(*output_it);
                 changed = true;
             }
             last_error_.clear();
         }
         if (changed) {
-            update_stored_output_state(updated_output);
             notify_multiroom_speaker_toolbar_changed();
         }
         schedule_control_update();
@@ -1060,8 +1158,6 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
         });
         if (group == groups.end()) throw std::invalid_argument("Speaker group no longer exists.");
 
-        std::vector<multiroom::OutputDevice> changed_outputs;
-        std::vector<multiroom::OutputDevice> known_outputs;
         bool no_group_members_available = false;
         {
             std::lock_guard lock(mutex_);
@@ -1077,18 +1173,16 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
                 const bool selected = std::find(resolved_ids.begin(), resolved_ids.end(), output.id) != resolved_ids.end();
                 if (output.selected != selected) {
                     output.selected = selected;
-                    changed_outputs.push_back(output);
+                    output.playback_error.clear();
+                    if (!selected) output.receiver_volume_percent.reset();
+                    update_stored_output_state(output);
                 }
             }
-            known_outputs = cached_outputs_;
+            // Retain preset members that are unavailable in the current cache.
+            replace_stored_output_selection(*group, cached_outputs_);
             last_error_.clear();
         }
 
-        for (const auto& output : changed_outputs) update_stored_output_state(output);
-        // The full preset is authoritative. Write it after the current cache
-        // snapshot so a discovered AirPlay 2 member which is temporarily
-        // missing its endpoint remains queued for the next discovery result.
-        replace_stored_output_selection(*group, known_outputs);
         notify_multiroom_speaker_toolbar_changed();
         schedule_control_update();
         if (no_group_members_available && !refresh_in_progress()) refresh_outputs();
@@ -1121,7 +1215,6 @@ std::string MultiroomComponentState::active_speaker_group_id() {
 }
 
 void MultiroomComponentState::set_output_dropdown_visibility(const std::string& id, bool visible) {
-    multiroom::OutputDevice updated_output;
     bool changed = false;
     {
         std::lock_guard lock(mutex_);
@@ -1130,37 +1223,53 @@ void MultiroomComponentState::set_output_dropdown_visibility(const std::string& 
         });
         if (output_it != cached_outputs_.end() && output_it->visible_in_dropdown != visible) {
             output_it->visible_in_dropdown = visible;
-            updated_output = *output_it;
+            update_stored_output_state(*output_it);
             changed = true;
         }
         last_error_.clear();
     }
     if (changed) {
-        update_stored_output_state(updated_output);
         notify_multiroom_speaker_toolbar_changed();
+    }
+}
+
+void MultiroomComponentState::set_output_offset_ms(const std::string& id, int offset_ms) {
+    try {
+        {
+            std::lock_guard lock(mutex_);
+            const auto output = std::find_if(cached_outputs_.begin(), cached_outputs_.end(), [&](const auto& candidate) {
+                return candidate.id == id;
+            });
+            offset_ms = clamp_output_offset_ms(offset_ms);
+            if (output == cached_outputs_.end() || output->offset_ms == offset_ms) {
+                return;
+            }
+            output->offset_ms = offset_ms;
+            update_stored_output_state(*output);
+        }
+        schedule_offset_update();
+    } catch (const std::exception& e) {
+        std::lock_guard lock(mutex_);
+        last_error_ = widen_utf8(e.what());
     }
 }
 
 void MultiroomComponentState::set_output_volume(const std::string& id, int volume) {
     try {
-        multiroom::OutputDevice updated_output;
-        bool changed = false;
         {
             std::lock_guard lock(mutex_);
             for (auto& output : cached_outputs_) {
                 if (output.id == id) {
                     output.volume = std::clamp(volume, 0, 100);
-                    updated_output = output;
-                    changed = true;
+                    output.receiver_volume_percent.reset();
+                    update_stored_output_state(output);
+                    control_volume_update_ids_.insert(output.id);
                     break;
                 }
             }
             last_error_.clear();
         }
-        if (changed) {
-            update_stored_output_state(updated_output);
-            schedule_volume_update({updated_output.id});
-        }
+        schedule_volume_update();
     } catch (const std::exception& e) {
         std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
@@ -1169,19 +1278,22 @@ void MultiroomComponentState::set_output_volume(const std::string& id, int volum
 
 void MultiroomComponentState::set_master_volume_percent(int volume) {
     try {
-        std::vector<std::string> output_ids;
         {
             std::lock_guard lock(mutex_);
-            master_volume_percent_ = std::clamp(volume, 0, 100);
+            const int master_volume = std::clamp(volume, 0, 100);
+            if (master_volume_percent_ == master_volume) {
+                return;
+            }
+            master_volume_percent_ = master_volume;
             if (discovery_started_) {
-                output_ids.reserve(cached_outputs_.size());
-                for (const auto& output : cached_outputs_) {
-                    output_ids.push_back(output.id);
+                for (auto& output : cached_outputs_) {
+                    output.receiver_volume_percent.reset();
+                    control_volume_update_ids_.insert(output.id);
                 }
             }
             last_error_.clear();
         }
-        schedule_volume_update(output_ids);
+        schedule_volume_update();
     } catch (const std::exception& e) {
         std::lock_guard lock(mutex_);
         last_error_ = widen_utf8(e.what());
@@ -1222,6 +1334,7 @@ void MultiroomComponentState::prepare_playback_open() {
         // the network handshake. Publish Connecting here so UI discovery
         // cannot enter that asynchronous handoff window.
         playback_connecting_ = true;
+        clear_output_playback_state(cached_outputs_);
         active_output_names_.clear();
         last_error_.clear();
     }
@@ -1264,7 +1377,7 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
         }
 
         std::vector<multiroom::OutputDevice> refreshed_outputs;
-        std::vector<std::wstring> active_output_names;
+        std::vector<multiroom::airplay::AirPlaySessionState> sessions_snapshot;
         {
             std::lock_guard transport_lock(transport_mutex_);
             if (!playback_engine_) {
@@ -1272,7 +1385,9 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
             }
             transport_.set_enabled_outputs(selected_ids(outputs_snapshot));
             for (const auto& output : outputs_snapshot) {
-                transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
+                transport_.set_output_offset_ms(output.id, output.offset_ms);
+                transport_.set_initial_output_volume(
+                    output.id, effective_remote_volume(output.volume, master_volume_snapshot));
             }
             playback_engine_->open_stream(format);
             if (metadata_active) {
@@ -1285,23 +1400,26 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
                 playback_engine_->stop();
                 throw std::runtime_error("AirPlay playback setup cancelled.");
             }
-            for (const auto& output : outputs_snapshot) {
-                transport_.set_output_volume(output.id, effective_remote_volume(output.volume, master_volume_snapshot));
-            }
             refreshed_outputs = transport_.list_outputs();
             preserve_user_output_state(refreshed_outputs, outputs_snapshot);
-            for (const auto& session : transport_.sessions()) {
-                if (session.open && session.phase == multiroom::airplay::AirPlaySessionPhase::Ready) {
-                    active_output_names.push_back(widen_utf8(
-                        session.output_name.empty() ? session.output_id : session.output_name));
-                }
-            }
+            sessions_snapshot = transport_.sessions();
         }
 
         {
             std::lock_guard lock(mutex_);
+            preserve_user_output_state(refreshed_outputs, cached_outputs_);
+            for (const auto& output : refreshed_outputs) {
+                const auto initial = std::find_if(outputs_snapshot.begin(), outputs_snapshot.end(), [&](const auto& old) {
+                    return old.id == output.id;
+                });
+                if (initial == outputs_snapshot.end() ||
+                    effective_remote_volume(initial->volume, master_volume_snapshot) !=
+                        effective_remote_volume(output.volume, master_volume_percent_)) {
+                    control_volume_update_ids_.insert(output.id);
+                }
+            }
             cached_outputs_ = std::move(refreshed_outputs);
-            active_output_names_ = std::move(active_output_names);
+            active_output_names_ = apply_session_status(cached_outputs_, sessions_snapshot);
             // Publish Open before clearing Connecting while holding the same
             // lock used by playback_active(). A refresh must never observe a
             // false/false gap after the AirPlay sessions are already ready.
@@ -1314,9 +1432,11 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
         // was in progress. Reconcile once more now that reconnecting is safe.
         schedule_control_update();
     } catch (const std::exception& e) {
+        std::vector<multiroom::airplay::AirPlaySessionState> failed_sessions;
         {
             std::lock_guard transport_lock(transport_mutex_);
             if (playback_engine_ && playback_engine_->stream_open()) {
+                failed_sessions = transport_.sessions();
                 playback_engine_->stop();
             }
             playback_open_.store(false);
@@ -1325,6 +1445,8 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
             std::lock_guard lock(mutex_);
             playback_format_valid_ = false;
             playback_connecting_ = false;
+            apply_session_status(cached_outputs_, failed_sessions);
+            clear_output_playback_state(cached_outputs_);
             active_output_names_.clear();
             last_error_ = widen_utf8(e.what());
         }
@@ -1388,6 +1510,7 @@ void MultiroomComponentState::stop_playback() {
         std::lock_guard lock(mutex_);
         playback_format_valid_ = false;
         playback_connecting_ = false;
+        clear_output_playback_state(cached_outputs_);
         active_output_names_.clear();
         run_deferred_refresh = refresh_deferred_until_stop_;
         refresh_deferred_until_stop_ = false;
@@ -1402,6 +1525,7 @@ void MultiroomComponentState::stop_playback() {
         std::lock_guard lock(mutex_);
         playback_format_valid_ = false;
         playback_connecting_ = false;
+        clear_output_playback_state(cached_outputs_);
         active_output_names_.clear();
         last_error_ = widen_utf8(e.what());
         throw;
@@ -1455,10 +1579,10 @@ std::wstring MultiroomComponentState::playback_destination_label() {
 
 std::wstring MultiroomComponentState::status_text() {
     std::lock_guard lock(mutex_);
-    if (!last_error_.empty()) return L"Discovery error: " + last_error_;
+    if (!last_error_.empty()) return L"AirPlay error: " + last_error_;
     if (!discovery_started_) return L"Discovery: not started";
     if (pairing_in_progress_) return L"Speakers: pairing";
-    if (control_in_progress_) return L"Speakers: applying selection";
+    if (control_in_progress_) return L"Speakers: applying changes";
     if (refresh_deferred_until_stop_) return L"Discovery: refresh queued until playback stops";
     if (refresh_in_progress_) {
         std::wstringstream stream;

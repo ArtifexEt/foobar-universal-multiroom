@@ -65,11 +65,13 @@ enum class AirPlayRemoteCommand {
     Stop,
     NextTrack,
     PreviousTrack,
+    VolumeChanged,
 };
 
 struct AirPlayRemoteCommandEvent {
     AirPlayRemoteCommand command = AirPlayRemoteCommand::TogglePlayPause;
     std::string command_id;
+    int volume_percent = 0;
 };
 
 using AirPlayRemoteCommandHandler = std::function<void(
@@ -150,6 +152,7 @@ private:
     void save_pairing_credentials(const AirPlayPairingCredentials& credentials);
     void dispatch_remote_command(
         const std::string& output_id,
+        const Connection* source,
         const AirPlayRemoteCommandEvent& event);
 
     std::shared_ptr<AirPlayPairingStore> pairing_store_;

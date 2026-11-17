@@ -83,14 +83,13 @@ connect/send/receive immediately before the render worker is joined.
 
 These are product gaps, not fallbacks for broken AirPlay behavior:
 
-1. Expose per-speaker latency offset in the everyday picker. The transport and
-   registry support it, but the current popup does not provide the planned
-   control.
+1. Verify live per-speaker latency offset changes in the picker with two
+   physical receivers.
 2. Add a compact recent-groups history in addition to the completed named virtual groups.
-3. Surface per-speaker session phases and actionable inline errors instead of
-   relying mainly on the shared status text and console.
-4. Map device-side volume feedback so receiver changes update foobar and every
-   visible UI surface. Playback actions are already mapped.
+3. Verify inline session status and errors with a group that includes an
+   unreachable or unpaired receiver.
+4. Verify device-side volume changes on receivers that send AirPlay 2
+   volume events.
 5. Add accessibility metadata for the custom-drawn rows and sliders beyond the
    existing keyboard/focus support.
 6. Validate final spacing, hit targets, scaling, and color contrast on 100%,

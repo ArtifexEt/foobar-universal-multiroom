@@ -28,7 +28,8 @@ without changing the foobar UI.
 - The foobar UI includes a compact speaker selector element.
 - The selector refreshes native AirPlay/mDNS discovery and shows discovered
   speakers in a dockable AirPlay-style popup with checkboxes and per-speaker
-  volume sliders, plus PIN pairing for AirPlay 2 receivers that require auth.
+  volume sliders, latency offsets, and connection status. AirPlay 2 receivers
+  that require authentication offer PIN pairing.
 - Opening the picker or native toolbar dropdown is read-only for the active
   transport and never refreshes discovery, takes the PCM transport lock, or
   reconciles sessions. A requested discovery refresh during playback is queued
@@ -87,11 +88,18 @@ without changing the foobar UI.
   ignored, and a mid-stream transport failure requests one controlled foobar
   stop instead of leaving the output in a retry loop. A receiver that rejects
   remote-command advertisement keeps its already-negotiated audio session.
+- Receivers that report native AirPlay 2 volume changes update the speaker
+  slider and display the actual receiver level when it differs from the
+  configured level. Foobar's master volume still scales local volume edits.
+- AirPlay 2 sessions share a monotonic sender clock across the selected group.
+  Per-speaker offsets adjust presentation time while RTP sample numbers stay
+  continuous across offset changes and seeks.
 - macOS PR builds package `MultiroomMacPlaybackTester`, a command-line tester
   for the portable core/AirPlay path that uses system Bonjour and sends a real
   generated tone through `MultiroomEngine`.
-- Still missing before daily use: device-side volume feedback and
-  multi-speaker drift/timing hardening.
+- Multi-speaker timing and device-side volume feedback still need validation
+  on physical receivers. Native PTP clock exchange and automatic drift
+  correction remain open.
 - Preferences list every discovered speaker with a visibility checkbox. Clearing
   it hides that speaker from the toolbar dropdown without changing its selected
   or connected state; existing settings migrate as visible.
@@ -118,6 +126,11 @@ without changing the foobar UI.
 The command, native dropdown, and standalone element use the same picker and
 persisted speaker group. The two live-label surfaces report active sessions,
 not merely saved checkboxes.
+
+In the full picker, enter an **Offset (ms)** between −2000 and +2000 for
+each speaker. Positive values delay that speaker relative to the group.
+Press Enter to apply or Escape to discard the edit. The component saves
+the offset with the speaker's volume and selection.
 
 ## Repository Layout
 

@@ -54,8 +54,8 @@ Acceptance:
 - [x] Add named virtual speaker-group presets with Preferences editing and picker/toolbar activation.
 - Add status/error messages.
 - Add auth warning, optional PIN flow, and persisted pair-verify credentials.
-- Extend the implemented encrypted AirPlay 2 play/pause/stop/next/previous
-  feedback with device-side volume updates.
+- [x] Decode device-side volume updates from the encrypted AirPlay 2 event channel.
+- Validate volume feedback and group timing on physical receivers.
 - Extend the implemented metadata forwarding only as receiver compatibility
   testing identifies protocol-specific gaps.
 - Add output format preference where speakers expose multiple formats.

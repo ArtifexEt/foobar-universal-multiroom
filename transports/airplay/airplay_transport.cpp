@@ -8,6 +8,12 @@
 
 namespace multiroom::airplay {
 
+namespace {
+
+constexpr uint32_t kMinimumNetworkLeadMs = 250;
+
+}  // namespace
+
 AirPlayTransport::AirPlayTransport(std::shared_ptr<AirPlayControlClient> control_client)
     : sessions_(std::move(control_client)) {}
 
@@ -60,10 +66,13 @@ void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) 
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
+    set_initial_output_volume(id, volume);
+    sessions_.set_volume(resolve_output_id(id), volume);
+}
+
+void AirPlayTransport::set_initial_output_volume(const std::string& id, int volume) {
     sync_discovered_outputs();
-    const auto resolved_id = resolve_output_id(id);
-    registry_.set_output_volume(resolved_id, volume);
-    sessions_.set_volume(resolved_id, volume);
+    registry_.set_output_volume(resolve_output_id(id), volume);
 }
 
 void AirPlayTransport::set_session_volume(const std::string& id, int volume) {
@@ -93,7 +102,7 @@ void AirPlayTransport::open_stream(const PcmFormat& format) {
     stream_format_ = format;
     stream_open_ = true;
     group_sync_anchor_valid_ = false;
-    group_sync_start_rtp_ = 0;
+    group_sync_start_ntp_ = 0;
 }
 
 void AirPlayTransport::connect_selected_outputs() {
@@ -146,11 +155,16 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         throw std::runtime_error("No selected AirPlay output has a ready session.");
     }
 
+    if (bytes == 0 || outputs.empty()) {
+        return;
+    }
+
     if (!group_sync_anchor_valid_) {
-        const auto now_rtp = ntp_to_rtp_timestamp(
-            current_ntp_timestamp(),
-            stream_format_.sample_rate);
-        group_sync_start_rtp_ = now_rtp - stream_timestamp;
+        // Preserve network lead even when a negative offset uses the full
+        // two seconds of the AirPlay realtime latency.
+        group_sync_start_ntp_ = current_ntp_timestamp() -
+            ntp_interval(stream_timestamp, stream_format_.sample_rate) +
+            ntp_interval(kMinimumNetworkLeadMs, 1000);
         group_sync_anchor_valid_ = true;
     }
 
@@ -160,8 +174,8 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
             stream_timestamp,
             bytes,
             stream_format_.sample_rate,
-            250,
-            group_sync_start_rtp_,
+            kMinimumNetworkLeadMs,
+            group_sync_start_ntp_,
             group_sync_anchor_valid_,
         });
     for (const auto& packet : packets) {
@@ -172,7 +186,7 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
 void AirPlayTransport::flush() {
     sessions_.flush();
     group_sync_anchor_valid_ = false;
-    group_sync_start_rtp_ = 0;
+    group_sync_start_ntp_ = 0;
 }
 
 void AirPlayTransport::stop() {
@@ -180,7 +194,7 @@ void AirPlayTransport::stop() {
     sessions_.stop();
     stream_open_ = false;
     group_sync_anchor_valid_ = false;
-    group_sync_start_rtp_ = 0;
+    group_sync_start_ntp_ = 0;
 }
 
 void AirPlayTransport::add_discovered_output(OutputDevice device) {

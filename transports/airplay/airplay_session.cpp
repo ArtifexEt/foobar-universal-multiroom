@@ -12,6 +12,8 @@ namespace multiroom::airplay {
 
 namespace {
 
+constexpr size_t kPacketHistoryLimit = 256;
+
 void validate_stream_format(const PcmFormat& format) {
     if (format.channels != 2 || format.bits_per_sample != 16) {
         throw std::invalid_argument("AirPlay MVP sessions require stereo 16-bit PCM.");
@@ -135,14 +137,10 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
             control_client_->set_volume(session.output_id, session.rtsp_session_id, output.volume);
             ++ready_count;
         } catch (const std::exception& e) {
+            close_control_session(session);
             session.phase = AirPlaySessionPhase::Failed;
             session.open = false;
             session.negotiated_format = {};
-            session.rtsp_session_id.clear();
-            session.stream_uri.clear();
-            session.rtsp_server.clear();
-            session.rtsp_supported_methods.clear();
-            session.transport_ports = {};
             session.last_error = e.what();
             session.queued_packets.clear();
             errors.push_back((output.name.empty() ? output.id : output.name) + ": " + e.what());
@@ -249,6 +247,9 @@ void AirPlaySessionManager::enqueue(const ScheduledPacket& packet, const void* f
         frames,
         bytes);
     it->second.queued_packets.push_back(packet);
+    if (it->second.queued_packets.size() > kPacketHistoryLimit) {
+        it->second.queued_packets.pop_front();
+    }
 }
 
 void AirPlaySessionManager::flush() {
