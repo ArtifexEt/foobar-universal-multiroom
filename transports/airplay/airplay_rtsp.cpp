@@ -53,7 +53,10 @@ constexpr size_t kAirPlay2Channels = 2;
 constexpr uint32_t kAirPlay2SampleRate = 44100;
 constexpr uint32_t kAirPlay2LatencySeconds = 2;
 constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
+constexpr uint64_t kUninitializedRtpTimestamp = uint64_t{1} << 32;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
+using RtspClock = std::chrono::steady_clock;
+constexpr auto kRtspExchangeTimeout = std::chrono::seconds(10);
 
 enum class AirPlay2AudioEncoding {
     Alac,
@@ -144,6 +147,15 @@ void close_socket(socket_handle_t handle) {
     closesocket(handle);
 #else
     close(handle);
+#endif
+}
+
+bool socket_timed_out() {
+#ifdef _WIN32
+    const auto error = WSAGetLastError();
+    return error == WSAETIMEDOUT || error == WSAEWOULDBLOCK;
+#else
+    return errno == ETIMEDOUT || errno == EAGAIN || errno == EWOULDBLOCK;
 #endif
 }
 
@@ -959,6 +971,28 @@ std::optional<AirPlayRemoteCommandEvent> parse_airplay_remote_command_message(
         return std::nullopt;
     }
 
+    using PlistType = fxchain::airplay::bplist::Value::Type;
+    const auto* params = decoded->find("params");
+    const auto* value = decoded->find("value");
+    if (value != nullptr && value->asStr() == "dvlc") {
+        // Receivers report their absolute volume as a normalized number.
+        const auto* volume = decoded->find("volume");
+        if (volume == nullptr && params != nullptr && params->type == PlistType::Dict) {
+            volume = params->find("volume");
+        }
+        if (volume == nullptr || (volume->type != PlistType::Real && volume->type != PlistType::Int)) {
+            return std::nullopt;
+        }
+        const double fraction = volume->type == PlistType::Real
+            ? volume->r
+            : static_cast<double>(volume->i);
+        if (!(fraction >= 0.0 && fraction <= 1.0)) {
+            return std::nullopt;
+        }
+        return AirPlayRemoteCommandEvent{
+            AirPlayRemoteCommand::VolumeChanged, {}, static_cast<int>(std::lround(fraction * 100.0))};
+    }
+
     std::optional<int64_t> command_number;
     if (const auto* modern = decoded->find("modernMediaRemoteCommand")) {
         if (modern->type == fxchain::airplay::bplist::Value::Type::Int) {
@@ -986,7 +1020,6 @@ std::optional<AirPlayRemoteCommandEvent> parse_airplay_remote_command_message(
     }
 
     if (!command) {
-        const auto* value = decoded->find("value");
         const auto legacy = value == nullptr ? std::string{} : lower_ascii(value->asStr());
         if (legacy == "play") command = AirPlayRemoteCommand::Play;
         else if (legacy == "paus" || legacy == "pause") command = AirPlayRemoteCommand::Pause;
@@ -1002,8 +1035,7 @@ std::optional<AirPlayRemoteCommandEvent> parse_airplay_remote_command_message(
 
     AirPlayRemoteCommandEvent event;
     event.command = *command;
-    if (const auto* params = decoded->find("params");
-        params != nullptr && params->type == fxchain::airplay::bplist::Value::Type::Dict) {
+    if (params != nullptr && params->type == PlistType::Dict) {
         if (const auto* command_id = params->find("kMRMediaRemoteOptionCommandID")) {
             event.command_id = command_id->asStr();
         }
@@ -1053,7 +1085,6 @@ public:
                 handle_.store(candidate);
                 if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0 &&
                     !cancelled_.load()) {
-                    configure_timeouts();
                     return true;
                 }
 
@@ -1078,18 +1109,16 @@ public:
         if (event_handle != kInvalidSocket) close_socket(event_handle);
     }
 
-    AirPlayRtspResponse exchange(const RtspRequest& request) {
-        const auto bytes = format_request(request);
-        send_all(bytes);
-        return read_response();
-    }
-
     AirPlayRtspResponse request(
         const std::string& method,
         const std::string& uri,
         std::map<std::string, std::string> headers = {},
         std::string body = {}) {
-        std::lock_guard lock(request_mutex_);
+        const auto deadline = RtspClock::now() + kRtspExchangeTimeout;
+        std::unique_lock lock(request_mutex_, std::defer_lock);
+        if (!lock.try_lock_until(deadline)) {
+            throw std::runtime_error("Timed out waiting to send AirPlay RTSP " + method + ".");
+        }
         headers.emplace("CSeq", std::to_string(next_cseq_++));
         headers.emplace("User-Agent", "FoobarUniversalMultiroom/0.1");
 
@@ -1098,7 +1127,7 @@ public:
         request.uri = uri;
         request.headers = std::move(headers);
         request.body = std::move(body);
-        return exchange(request);
+        return exchange_bytes(format_request(request), deadline);
     }
 
     AirPlayRtspResponse request_success(
@@ -1153,12 +1182,8 @@ public:
         }
 
         if (!ap2_audio_key_.empty()) {
-            ensure_airplay2_sync_started(packet);
-            maybe_send_airplay2_sync(false, packet.presentation_timestamp);
-
-            const auto latency_frames = static_cast<uint64_t>(stream_sample_rate_) * kAirPlay2LatencySeconds;
-            const auto rtp_timestamp =
-                static_cast<uint32_t>((packet.presentation_timestamp + latency_frames) & 0xFFFFFFFFu);
+            const auto rtp_timestamp = ap2_rtp_base_ + static_cast<uint32_t>(packet.stream_timestamp);
+            maybe_send_airplay2_sync(packet, rtp_timestamp);
             const auto rtp_sequence = next_rtp_sequence_++;
             auto header = make_rtp_header(
                 kRtpPayloadTypeAirPlay2Realtime,
@@ -1174,7 +1199,6 @@ public:
             const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, payload);
             header.insert(header.end(), encrypted.begin(), encrypted.end());
             udp_ports_.data.send_to(remote_host_, remote_data_port_, header);
-            rtp_clock_initialized_ = true;
             next_rtp_timestamp_ = rtp_timestamp + static_cast<uint32_t>(kAirPlay2FramesPerPacket);
             return;
         }
@@ -1183,7 +1207,6 @@ public:
         const auto frame_count = static_cast<uint32_t>(bytes / (kAirPlay2Channels * sizeof(int16_t)));
         const auto rtp = make_rtp_l16_packet(next_rtp_sequence_++, timestamp, kDefaultSsrc, frames, bytes);
         udp_ports_.data.send_to(remote_host_, remote_data_port_, rtp);
-        rtp_clock_initialized_ = true;
         next_rtp_timestamp_ = timestamp + frame_count;
     }
 
@@ -1192,6 +1215,7 @@ public:
             throw std::logic_error("Cannot set AirPlay volume before stream URI is known.");
         }
 
+        std::lock_guard lock(volume_feedback_mutex_);
         request_success(
             "SET_PARAMETER",
             stream_uri_,
@@ -1200,6 +1224,7 @@ public:
                 {"Session", rtsp_session_id},
             },
             make_volume_parameter_body(volume));
+        last_volume_percent_ = std::clamp(volume, 0, 100);
     }
 
     void set_metadata(const std::string& rtsp_session_id, const PlaybackMetadata& metadata) {
@@ -1208,9 +1233,10 @@ public:
         }
 
         const uint64_t position_frames = metadata.position_ms * stream_sample_rate_ / 1000;
-        const uint32_t current = rtp_clock_initialized_
-            ? next_rtp_timestamp_
-            : static_cast<uint32_t>(position_frames & 0xffffffffu);
+        const auto next_rtp_timestamp = next_rtp_timestamp_.load();
+        const auto current = next_rtp_timestamp == kUninitializedRtpTimestamp
+            ? static_cast<uint32_t>(position_frames)
+            : static_cast<uint32_t>(next_rtp_timestamp);
         const uint32_t start = current - static_cast<uint32_t>(position_frames & 0xffffffffu);
         const auto rtp_info = "rtptime=" + std::to_string(start);
 
@@ -1259,11 +1285,12 @@ public:
             };
 
         static_cast<void>(request("FLUSH", stream_uri_, std::move(headers)));
-        // The next PCM packet belongs to a fresh sender timeline. Force this
-        // connection to consume the transport's new shared group anchor.
-        ap2_sync_started_ = false;
-        ap2_sync_start_rtp_ = 0;
-        ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
+        // The source frame cursor restarts at zero. Keep sending from the
+        // RTP timestamp promised in the FLUSH header, with a new sync anchor.
+        const auto next_rtp_timestamp = next_rtp_timestamp_.load();
+        if (next_rtp_timestamp != kUninitializedRtpTimestamp) {
+            ap2_rtp_base_ = static_cast<uint32_t>(next_rtp_timestamp);
+        }
         ap2_first_audio_ = true;
     }
 
@@ -1293,6 +1320,7 @@ public:
         }
 
         stream_sample_rate_ = format.sample_rate;
+        ap2_rtp_base_ = stream_sample_rate_ * kAirPlay2LatencySeconds;
 
         ap2_audio_encoding_ = audio_encoding;
         dacp_id_ = random_hex(8);
@@ -1411,7 +1439,6 @@ public:
         }
         remote_data_port_ = stream_ports.first;
         remote_control_port_ = stream_ports.second == 0 ? stream_ports.first : stream_ports.second;
-        ap2_sync_started_ = false;
 
         if (!ap2_uses_ptp_ || retry_record_after_stream_setup) {
             static_cast<void>(request_success(
@@ -1469,9 +1496,9 @@ public:
 private:
     void reset_session_state() {
         next_cseq_ = 1;
+        control_exchange_failed_ = false;
         next_rtp_sequence_ = 0;
-        next_rtp_timestamp_ = 0;
-        rtp_clock_initialized_ = false;
+        next_rtp_timestamp_ = kUninitializedRtpTimestamp;
         stream_sample_rate_ = kAirPlay2SampleRate;
         remote_data_port_ = 0;
         remote_control_port_ = 0;
@@ -1482,11 +1509,11 @@ private:
         ap2_timing_peer_uuid_.clear();
         ap2_timing_clock_id_ = 0;
         ap2_audio_nonce_ = 0;
-        ap2_sync_start_rtp_ = 0;
+        ap2_rtp_base_ = 0;
         ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
         ap2_first_audio_ = true;
-        ap2_sync_started_ = false;
-        ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
+        ap2_last_sync_at_ = {};
+        ap2_last_sync_offset_ms_ = 0;
         remote_host_.clear();
         stream_uri_.clear();
         dacp_id_.clear();
@@ -1526,7 +1553,8 @@ private:
     }
 
     std::string make_rtp_info_header() const {
-        const auto timestamp = rtp_clock_initialized_ ? next_rtp_timestamp_ : uint32_t{};
+        // Narrowing the uninitialized marker also yields the pre-audio value 0.
+        const auto timestamp = static_cast<uint32_t>(next_rtp_timestamp_.load());
         return "seq=" + std::to_string(next_rtp_sequence_) + ";rtptime=" + std::to_string(timestamp);
     }
 
@@ -1551,8 +1579,7 @@ private:
 
         AirPlayRtspResponse response;
         try {
-            send_all(request.str());
-            response = read_response();
+            response = exchange_bytes(request.str(), RtspClock::now() + kRtspExchangeTimeout);
         } catch (const std::exception& e) {
             throw std::runtime_error("AirPlay 2 HTTP " + uri + " failed: " + e.what());
         }
@@ -1849,48 +1876,41 @@ private:
         };
     }
 
-    void ensure_airplay2_sync_started(const ScheduledPacket& packet) {
-        if (ap2_sync_started_) {
+    void maybe_send_airplay2_sync(const ScheduledPacket& packet, uint32_t rtp_timestamp) {
+        if (remote_control_port_ == 0) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!ap2_first_audio_ && packet.offset_ms == ap2_last_sync_offset_ms_ &&
+            now - ap2_last_sync_at_ < std::chrono::seconds(1)) {
             return;
         }
         if (!packet.group_sync_anchor_valid) {
             throw std::logic_error("AirPlay 2 packet is missing the shared group timing anchor.");
         }
 
-        ap2_sync_start_rtp_ = packet.group_sync_start_rtp;
-        ap2_sync_started_ = true;
-        send_airplay2_sync_packet(true, packet.presentation_timestamp);
-    }
-
-    void maybe_send_airplay2_sync(bool first, uint64_t presentation_timestamp) {
-        if (first || std::chrono::steady_clock::now() - ap2_last_sync_at_ >= std::chrono::seconds(1)) {
-            send_airplay2_sync_packet(first, presentation_timestamp);
-        }
-    }
-
-    void send_airplay2_sync_packet(bool first, uint64_t presentation_timestamp) {
-        if (remote_control_port_ == 0) {
-            return;
-        }
-
-        const auto latency_frames = static_cast<uint64_t>(stream_sample_rate_) * kAirPlay2LatencySeconds;
-        const auto rtp_timestamp =
-            static_cast<uint32_t>((presentation_timestamp + latency_frames) & 0xFFFFFFFFu);
-        const auto ntp = rtp_timestamp_to_ntp(
-            ap2_sync_start_rtp_ + presentation_timestamp,
-            stream_sample_rate_);
+        // An offset changes the presentation time of an RTP sample. Keeping
+        // the sample numbers continuous avoids overlaps at startup and gaps
+        // when the user adjusts an offset during playback.
+        const auto latency_frames = stream_sample_rate_ * kAirPlay2LatencySeconds;
+        const auto ntp = airplay_presentation_ntp(
+            packet.group_sync_start_ntp,
+            packet.stream_timestamp,
+            stream_sample_rate_,
+            packet.offset_ms);
 
         std::vector<uint8_t> sync;
         sync.reserve(20);
-        sync.push_back(first ? 0x90 : 0x80);
+        sync.push_back(ap2_first_audio_ ? 0x90 : 0x80);
         sync.push_back(0xD4);
         write_u16_be(sync, 0x0007);
-        write_u32_be(sync, rtp_timestamp - static_cast<uint32_t>(latency_frames));
+        write_u32_be(sync, rtp_timestamp - latency_frames);
         write_u32_be(sync, static_cast<uint32_t>(ntp >> 32));
         write_u32_be(sync, static_cast<uint32_t>(ntp & 0xFFFFFFFFu));
         write_u32_be(sync, rtp_timestamp);
         udp_ports_.control.send_to(remote_host_, remote_control_port_, sync);
-        ap2_last_sync_at_ = std::chrono::steady_clock::now();
+        ap2_last_sync_at_ = now;
+        ap2_last_sync_offset_ms_ = packet.offset_ms;
     }
 
     std::string local_address_text() const {
@@ -1963,14 +1983,6 @@ private:
             const auto owned = event_handle_.exchange(kInvalidSocket);
             if (owned != kInvalidSocket) close_socket(owned);
         }
-    }
-
-    void configure_timeouts() {
-        if (handle_.load() == kInvalidSocket) {
-            return;
-        }
-
-        configure_socket_timeouts(handle_.load(), 10000);
     }
 
     void configure_socket_timeouts(socket_handle_t handle, unsigned long timeout_ms) {
@@ -2065,11 +2077,12 @@ private:
             std::vector<uint8_t> request;
             sockaddr_storage from = {};
             int from_size = 0;
-            if (!udp_ports_.timing.receive_from(request, from, from_size) || request.size() < 32) {
+            if (!udp_ports_.timing.receive_from(request, from, from_size) || request.size() != 32 ||
+                (request[0] & 0xc0) != 0x80 || (request[1] & 0x7f) != 0x52) {
                 continue;
             }
 
-            const auto now = current_ntp_timestamp();
+            const auto received_at = current_ntp_timestamp();
             std::vector<uint8_t> response;
             response.reserve(32);
             response.push_back(request[0]);
@@ -2077,10 +2090,11 @@ private:
             write_u16_be(response, 0x0007);
             write_u32_be(response, 0);
             response.insert(response.end(), request.begin() + 24, request.begin() + 32);
-            write_u32_be(response, static_cast<uint32_t>(now >> 32));
-            write_u32_be(response, static_cast<uint32_t>(now & 0xFFFFFFFFu));
-            write_u32_be(response, static_cast<uint32_t>(now >> 32));
-            write_u32_be(response, static_cast<uint32_t>(now & 0xFFFFFFFFu));
+            write_u32_be(response, static_cast<uint32_t>(received_at >> 32));
+            write_u32_be(response, static_cast<uint32_t>(received_at));
+            const auto sent_at = current_ntp_timestamp();
+            write_u32_be(response, static_cast<uint32_t>(sent_at >> 32));
+            write_u32_be(response, static_cast<uint32_t>(sent_at));
             udp_ports_.timing.send_to_address(from, from_size, response);
         }
     }
@@ -2110,6 +2124,15 @@ private:
 
             const auto remote_event = parse_airplay_remote_command_message(message);
             if (remote_event && remote_command_handler_) {
+                if (remote_event->command == AirPlayRemoteCommand::VolumeChanged) {
+                    // Respond first, then skip feedback received during a local write.
+                    std::unique_lock lock(volume_feedback_mutex_, std::try_to_lock);
+                    if (!lock || cancelled_.load() || !last_volume_percent_ ||
+                        *last_volume_percent_ == remote_event->volume_percent) {
+                        continue;
+                    }
+                    last_volume_percent_ = remote_event->volume_percent;
+                }
                 try {
                     remote_command_handler_(*remote_event);
                 } catch (const std::exception&) {
@@ -2162,41 +2185,89 @@ private:
         }
     }
 
-    void send_all_raw(const uint8_t* data, size_t size) {
+    socket_handle_t prepare_control_io(int timeout_option, RtspClock::time_point deadline) {
+        const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - RtspClock::now()).count();
+        if (remaining <= 0) {
+            throw std::runtime_error("AirPlay control exchange timed out.");
+        }
+        const auto handle = handle_.load();
+        if (handle == kInvalidSocket) {
+            throw std::runtime_error("AirPlay control connection is closed.");
+        }
+#ifdef _WIN32
+        const auto timeout = static_cast<DWORD>(remaining);
+        const int result = setsockopt(handle, SOL_SOCKET, timeout_option,
+            reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+        timeval timeout{};
+        timeout.tv_sec = static_cast<decltype(timeout.tv_sec)>(remaining / 1000);
+        timeout.tv_usec = static_cast<decltype(timeout.tv_usec)>((remaining % 1000) * 1000);
+        const int result = setsockopt(handle, SOL_SOCKET, timeout_option, &timeout, sizeof(timeout));
+#endif
+        if (result != 0) {
+            throw std::runtime_error("Could not set the AirPlay control exchange timeout.");
+        }
+        return handle;
+    }
+
+    AirPlayRtspResponse exchange_bytes(const std::string& bytes, RtspClock::time_point deadline) {
+        if (control_exchange_failed_) {
+            throw std::runtime_error("AirPlay control connection previously failed.");
+        }
+        try {
+            send_all(bytes, deadline);
+            return read_response(deadline);
+        } catch (...) {
+            // A partial request or late response can leave the encrypted
+            // channel out of step. Fail later requests on this connection.
+            control_exchange_failed_ = true;
+            throw;
+        }
+    }
+
+    void send_all_raw(const uint8_t* data, size_t size, RtspClock::time_point deadline) {
         size_t sent = 0;
         while (sent < size) {
             const auto remaining = size - sent;
+            const auto handle = prepare_control_io(SO_SNDTIMEO, deadline);
 #ifdef _WIN32
-            const int rc = send(handle_.load(), reinterpret_cast<const char*>(data + sent), static_cast<int>(remaining), 0);
+            const int rc = send(handle, reinterpret_cast<const char*>(data + sent), static_cast<int>(remaining), 0);
 #else
-            const ssize_t rc = send(handle_.load(), data + sent, remaining, 0);
+            const ssize_t rc = send(handle, data + sent, remaining, 0);
 #endif
             if (rc <= 0) {
+                if (rc < 0 && socket_timed_out()) {
+                    throw std::runtime_error("AirPlay control exchange timed out sending the request.");
+                }
                 throw std::runtime_error("Could not write RTSP request to AirPlay endpoint.");
             }
             sent += static_cast<size_t>(rc);
         }
     }
 
-    void send_all(const std::string& bytes) {
+    void send_all(const std::string& bytes, RtspClock::time_point deadline) {
         if (!control_cipher_) {
-            send_all_raw(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+            send_all_raw(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), deadline);
             return;
         }
 
         const AirPlay2Bytes plaintext(bytes.begin(), bytes.end());
         const auto encrypted = control_cipher_->encrypt_frame(plaintext);
-        send_all_raw(encrypted.data(), encrypted.size());
+        send_all_raw(encrypted.data(), encrypted.size(), deadline);
     }
 
-    std::string read_plaintext_chunk() {
+    std::string read_plaintext_chunk(RtspClock::time_point deadline) {
         char buffer[4096] = {};
+        const auto handle = prepare_control_io(SO_RCVTIMEO, deadline);
 #ifdef _WIN32
-        const int received = recv(handle_.load(), buffer, static_cast<int>(sizeof(buffer)), 0);
+        const int received = recv(handle, buffer, static_cast<int>(sizeof(buffer)), 0);
 #else
-        const ssize_t received = recv(handle_.load(), buffer, sizeof(buffer), 0);
+        const ssize_t received = recv(handle, buffer, sizeof(buffer), 0);
 #endif
         if (received <= 0) {
+            if (received < 0 && socket_timed_out()) {
+                throw std::runtime_error("AirPlay control exchange timed out waiting for the response.");
+            }
             throw std::runtime_error("Could not read RTSP response from AirPlay endpoint.");
         }
 
@@ -2215,13 +2286,13 @@ private:
         return plaintext;
     }
 
-    AirPlayRtspResponse read_response() {
+    AirPlayRtspResponse read_response(RtspClock::time_point deadline) {
         std::string raw;
         size_t header_end = std::string::npos;
         size_t expected_size = 0;
 
         for (;;) {
-            raw += read_plaintext_chunk();
+            raw += read_plaintext_chunk(deadline);
             if (header_end == std::string::npos) {
                 header_end = raw.find("\r\n\r\n");
                 if (header_end != std::string::npos) {
@@ -2238,12 +2309,12 @@ private:
 
     std::atomic<socket_handle_t> handle_{kInvalidSocket};
     std::atomic_bool cancelled_ = false;
-    std::mutex request_mutex_;
+    std::timed_mutex request_mutex_;
+    bool control_exchange_failed_ = false;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
-    uint32_t next_rtp_timestamp_ = 0;
+    std::atomic<uint64_t> next_rtp_timestamp_ = kUninitializedRtpTimestamp;
     uint32_t stream_sample_rate_ = kAirPlay2SampleRate;
-    bool rtp_clock_initialized_ = false;
     uint16_t remote_data_port_ = 0;
     uint16_t remote_control_port_ = 0;
     uint32_t ap2_session_id_ = 0;
@@ -2253,11 +2324,11 @@ private:
     std::string ap2_timing_peer_uuid_;
     uint64_t ap2_timing_clock_id_ = 0;
     uint64_t ap2_audio_nonce_ = 0;
-    uint64_t ap2_sync_start_rtp_ = 0;
+    uint32_t ap2_rtp_base_ = 0;
     AirPlay2AudioEncoding ap2_audio_encoding_ = AirPlay2AudioEncoding::Alac;
     bool ap2_first_audio_ = true;
-    bool ap2_sync_started_ = false;
-    std::chrono::steady_clock::time_point ap2_last_sync_at_ = std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point ap2_last_sync_at_;
+    int ap2_last_sync_offset_ms_ = 0;
     std::string remote_host_;
     std::string stream_uri_;
     std::string dacp_id_;
@@ -2268,6 +2339,8 @@ private:
     std::unique_ptr<AirPlay2FrameCipher> control_cipher_;
     std::unique_ptr<AirPlay2FrameCipher> event_cipher_;
     std::function<void(const AirPlayRemoteCommandEvent&)> remote_command_handler_;
+    std::mutex volume_feedback_mutex_;
+    std::optional<int> last_volume_percent_;
     std::atomic_bool event_running_ = false;
     std::thread event_thread_;
     std::atomic<socket_handle_t> event_handle_{kInvalidSocket};
@@ -2299,7 +2372,15 @@ bool AirPlayPairingCredentials::valid() const {
 AirPlayRtspControlClient::AirPlayRtspControlClient(std::shared_ptr<AirPlayPairingStore> pairing_store)
     : pairing_store_(std::move(pairing_store)) {}
 
-AirPlayRtspControlClient::~AirPlayRtspControlClient() = default;
+AirPlayRtspControlClient::~AirPlayRtspControlClient() {
+    decltype(connections_) connections;
+    {
+        std::lock_guard lock(connections_mutex_);
+        connections.swap(connections_);
+    }
+    // Joining an event worker can wait for its active-connection check.
+    connections.clear();
+}
 
 void AirPlayRtspControlClient::set_remote_command_handler(
     AirPlayRemoteCommandHandler handler) {
@@ -2309,7 +2390,15 @@ void AirPlayRtspControlClient::set_remote_command_handler(
 
 void AirPlayRtspControlClient::dispatch_remote_command(
     const std::string& output_id,
+    const Connection* source,
     const AirPlayRemoteCommandEvent& event) {
+    if (event.command == AirPlayRemoteCommand::VolumeChanged) {
+        std::lock_guard lock(connections_mutex_);
+        const auto current = connections_.find(output_id);
+        if (current == connections_.end() || current->second.get() != source) {
+            return;
+        }
+    }
     AirPlayRemoteCommandHandler handler;
     {
         std::lock_guard lock(remote_command_mutex_);
@@ -2325,6 +2414,7 @@ std::optional<AirPlayPairingCredentials> AirPlayRtspControlClient::load_pairing_
     std::vector<std::string> candidate_ids = {output.id};
     candidate_ids.insert(candidate_ids.end(), output.aliases.begin(), output.aliases.end());
 
+    std::lock_guard lock(pairing_credentials_mutex_);
     if (pairing_store_) {
         for (const auto& candidate_id : candidate_ids) {
             auto stored = pairing_store_->load(candidate_id);
@@ -2356,6 +2446,7 @@ void AirPlayRtspControlClient::save_pairing_credentials(const AirPlayPairingCred
         throw std::invalid_argument("Cannot save incomplete AirPlay pairing credentials.");
     }
 
+    std::lock_guard lock(pairing_credentials_mutex_);
     memory_pairing_credentials_[credentials.output_id] = credentials;
     if (pairing_store_) {
         pairing_store_->save(credentials);
@@ -2379,8 +2470,8 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
     }
 
     auto connection = std::make_shared<Connection>();
-    connection->set_remote_command_handler([this, output_id = output.id](const auto& event) {
-        dispatch_remote_command(output_id, event);
+    connection->set_remote_command_handler([this, output_id = output.id, source = connection.get()](const auto& event) {
+        dispatch_remote_command(output_id, source, event);
     });
     {
         std::lock_guard lock(pending_connections_mutex_);
@@ -2401,9 +2492,10 @@ AirPlayNegotiatedSession AirPlayRtspControlClient::open(const OutputDevice& outp
                 pending_connections_.erase(pending);
             }
         }
+        std::shared_ptr<Connection> previous;
         {
             std::lock_guard lock(connections_mutex_);
-            connections_[output.id] = std::move(connection);
+            previous = std::exchange(connections_[output.id], std::move(connection));
         }
         return session;
     } catch (...) {
@@ -2469,7 +2561,7 @@ void AirPlayRtspControlClient::set_metadata(
     {
         std::lock_guard lock(connections_mutex_);
         const auto it = connections_.find(output_id);
-        if (it == connections_.end()) {
+        if (it == connections_.end() || !it->second->matches_active_rtsp_session(rtsp_session_id)) {
             return;
         }
         connection = it->second;
@@ -2487,7 +2579,9 @@ void AirPlayRtspControlClient::clear_metadata(
     {
         std::lock_guard lock(connections_mutex_);
         const auto it = connections_.find(output_id);
-        if (it == connections_.end()) return;
+        if (it == connections_.end() || !it->second->matches_active_rtsp_session(rtsp_session_id)) {
+            return;
+        }
         connection = it->second;
     }
     connection->clear_metadata(rtsp_session_id);

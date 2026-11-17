@@ -14,7 +14,7 @@ int clamp_volume(int volume) {
 }
 
 int clamp_offset_ms(int offset_ms) {
-    return std::clamp(offset_ms, -2000, 2000);
+    return std::clamp(offset_ms, -kMaxOutputOffsetMs, kMaxOutputOffsetMs);
 }
 
 }  // namespace

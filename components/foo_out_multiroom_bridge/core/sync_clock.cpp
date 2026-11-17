@@ -1,4 +1,5 @@
 #include "sync_clock.h"
+#include "transport.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -48,7 +49,7 @@ uint64_t SyncClock::advance(uint64_t frame_count) {
 }
 
 int64_t SyncClock::frames_for_offset_ms(int offset_ms) const {
-    const auto clamped_offset_ms = std::clamp(offset_ms, -2000, 2000);
+    const auto clamped_offset_ms = std::clamp(offset_ms, -kMaxOutputOffsetMs, kMaxOutputOffsetMs);
     return static_cast<int64_t>(clamped_offset_ms) * static_cast<int64_t>(sample_rate_) / 1000;
 }
 

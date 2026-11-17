@@ -420,6 +420,10 @@ OutputDevice to_output_device(const DiscoveredService& service) {
 
     OutputDevice device;
     device.id = device_id_from(normalized_service);
+    const auto hardware_id = normalize_hardware_id(txt_value(normalized_service.txt, "deviceid"));
+    if (!hardware_id.empty() && device.id != "airplay:" + hardware_id) {
+        device.aliases.push_back("airplay:" + hardware_id);
+    }
     device.name = normalized_service.instance_name.empty() ? normalized_service.full_name : normalized_service.instance_name;
     device.type = OutputType::AirPlay;
     device.has_password = truthy_txt(normalized_service.txt, "pw");
@@ -459,6 +463,9 @@ bool is_numeric_endpoint(const OutputDevice& device) {
 }
 
 bool same_physical_receiver(const OutputDevice& left, const OutputDevice& right) {
+    const auto left_key = lower_ascii(txt_value(left.txt_records, "pk"));
+    const auto right_key = lower_ascii(txt_value(right.txt_records, "pk"));
+    if (!left_key.empty() && !right_key.empty() && left_key != right_key) return false;
     return !left.name.empty() &&
            !left.endpoint_host.empty() &&
            lower_ascii(left.name) == lower_ascii(right.name) &&

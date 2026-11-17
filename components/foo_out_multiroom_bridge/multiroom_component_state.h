@@ -37,6 +37,7 @@ public:
     bool activate_speaker_group(const std::string& id);
     std::string active_speaker_group_id();
     void set_output_dropdown_visibility(const std::string& id, bool visible);
+    void set_output_offset_ms(const std::string& id, int offset_ms);
     void set_output_volume(const std::string& id, int volume);
     void set_master_volume_percent(int volume);
     void set_playback_metadata(const multiroom::PlaybackMetadata& metadata);
@@ -59,18 +60,19 @@ private:
     void refresh_outputs_worker();
     void refresh_outputs_for_playback();
     void schedule_control_update();
-    void schedule_volume_update(const std::vector<std::string>& ids);
+    void schedule_offset_update();
+    void schedule_volume_update();
     void schedule_metadata_update();
     void control_update_worker();
     void pairing_worker(std::string id, std::string pin);
     void handle_remote_command(
         const std::string& output_id,
         const multiroom::airplay::AirPlayRemoteCommandEvent& event);
+    void apply_receiver_volume(const std::string& output_id, int volume_percent);
 
     std::mutex mutex_;
+    std::mutex playback_lifecycle_mutex_;
     std::mutex transport_mutex_;
-    multiroom::airplay::AirPlayTransport transport_;
-    std::unique_ptr<multiroom::MultiroomEngine> playback_engine_;
     multiroom::PcmFormat playback_format_;
     std::thread refresh_thread_;
     std::thread control_thread_;
@@ -83,7 +85,9 @@ private:
     bool refresh_deferred_until_stop_ = false;
     bool control_in_progress_ = false;
     bool control_full_update_requested_ = false;
+    bool control_offset_update_requested_ = false;
     std::set<std::string> control_volume_update_ids_;
+    std::set<std::string> control_sending_volume_ids_;
     multiroom::PlaybackMetadata playback_metadata_;
     bool playback_metadata_active_ = false;
     bool control_metadata_update_requested_ = false;
@@ -92,10 +96,15 @@ private:
     bool playback_connecting_ = false;
     int master_volume_percent_ = 100;
     std::atomic_bool playback_open_ = false;
+    std::atomic_bool routing_selection_changed_ = false;
     std::atomic_bool playback_open_cancel_requested_ = false;
     std::atomic_bool playback_failure_stop_queued_ = false;
     std::atomic_bool shutting_down_ = false;
     std::deque<std::string> recent_remote_command_ids_;
     size_t refresh_count_ = 0;
     std::wstring last_error_;
+    // Destroy the transport and join its event workers before destroying the
+    // component state those workers can still access during shutdown.
+    multiroom::airplay::AirPlayTransport transport_;
+    std::unique_ptr<multiroom::MultiroomEngine> playback_engine_;
 };

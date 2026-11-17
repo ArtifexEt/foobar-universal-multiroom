@@ -4,10 +4,13 @@
 #include <cstdint>
 #include <chrono>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace multiroom {
+
+inline constexpr int kMaxOutputOffsetMs = 2000;
 
 enum class OutputType {
     Unknown,
@@ -40,6 +43,9 @@ struct OutputDevice {
     std::vector<std::string> aliases;
     // Product UI preference. It does not change selection or transport state.
     bool visible_in_dropdown = true;
+    bool playback_ready = false;
+    std::string playback_error;
+    std::optional<int> receiver_volume_percent;
 };
 
 struct PcmFormat {

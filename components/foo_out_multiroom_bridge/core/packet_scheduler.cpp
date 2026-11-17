@@ -41,7 +41,7 @@ std::vector<ScheduledPacket> PacketScheduler::schedule(
             output.volume,
             output.offset_ms,
             output.measured_latency_ms,
-            request.group_sync_start_rtp,
+            request.group_sync_start_ntp,
             request.group_sync_anchor_valid,
         });
     }

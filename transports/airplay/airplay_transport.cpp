@@ -8,6 +8,12 @@
 
 namespace multiroom::airplay {
 
+namespace {
+
+constexpr uint32_t kMinimumNetworkLeadMs = 250;
+
+}  // namespace
+
 AirPlayTransport::AirPlayTransport(std::shared_ptr<AirPlayControlClient> control_client)
     : sessions_(std::move(control_client)) {}
 
@@ -41,10 +47,14 @@ AirPlayPairingResult AirPlayTransport::pair_output(const std::string& id, const 
     if (!output) {
         throw std::out_of_range("Unknown AirPlay output: " + id);
     }
-    if (!output->supports_airplay2) {
-        throw std::runtime_error("AirPlay PIN pairing requires an AirPlay 2 output: " + id);
+    return pair_output(*output, pin);
+}
+
+AirPlayPairingResult AirPlayTransport::pair_output(const OutputDevice& output, const std::string& pin) {
+    if (!output.supports_airplay2) {
+        throw std::runtime_error("AirPlay PIN pairing requires an AirPlay 2 output: " + output.id);
     }
-    return sessions_.pair_output(*output, pin);
+    return sessions_.pair_output(output, pin);
 }
 
 void AirPlayTransport::set_remote_command_handler(
@@ -55,15 +65,37 @@ void AirPlayTransport::set_remote_command_handler(
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
     sync_discovered_outputs();
     registry_.set_enabled_outputs(resolve_output_ids(ids));
-    sessions_.prepare_outputs(registry_.list());
-    sessions_.close_missing_outputs(registry_.list());
+    const auto outputs = registry_.list();
+    sessions_.prepare_outputs(outputs);
+    close_unselected_output_sessions(outputs);
+}
+
+void AirPlayTransport::set_routed_outputs(const std::vector<std::string>& ids) {
+    const auto ready = sessions_.ready_output_ids();
+    auto routed = resolve_output_ids(ids);
+    std::erase_if(routed, [&](const auto& id) { return !ready.contains(id); });
+    registry_.set_enabled_outputs(routed);
+}
+
+void AirPlayTransport::retain_routed_outputs(const std::vector<std::string>& ids) {
+    const auto desired = resolve_output_ids(ids);
+    std::vector<std::string> retained;
+    for (const auto& output : registry_.list()) {
+        if (output.selected && std::find(desired.begin(), desired.end(), output.id) != desired.end()) {
+            retained.push_back(output.id);
+        }
+    }
+    set_routed_outputs(retained);
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {
+    set_initial_output_volume(id, volume);
+    sessions_.set_volume(resolve_output_id(id), volume);
+}
+
+void AirPlayTransport::set_initial_output_volume(const std::string& id, int volume) {
     sync_discovered_outputs();
-    const auto resolved_id = resolve_output_id(id);
-    registry_.set_output_volume(resolved_id, volume);
-    sessions_.set_volume(resolved_id, volume);
+    registry_.set_output_volume(resolve_output_id(id), volume);
 }
 
 void AirPlayTransport::set_session_volume(const std::string& id, int volume) {
@@ -76,13 +108,21 @@ void AirPlayTransport::set_output_offset_ms(const std::string& id, int offset_ms
 }
 
 void AirPlayTransport::set_playback_metadata(const PlaybackMetadata& metadata) {
-    playback_metadata_ = metadata;
-    sessions_.set_metadata(metadata);
+    stage_playback_metadata(metadata);
+    publish_playback_metadata();
 }
 
 void AirPlayTransport::clear_playback_metadata() {
-    playback_metadata_.reset();
-    sessions_.clear_metadata();
+    stage_playback_metadata(std::nullopt);
+    publish_playback_metadata();
+}
+
+void AirPlayTransport::stage_playback_metadata(std::optional<PlaybackMetadata> metadata, bool update_existing_sessions) {
+    sessions_.stage_metadata(std::move(metadata), update_existing_sessions);
+}
+
+void AirPlayTransport::publish_playback_metadata() {
+    sessions_.publish_metadata();
 }
 
 void AirPlayTransport::open_stream(const PcmFormat& format) {
@@ -93,7 +133,7 @@ void AirPlayTransport::open_stream(const PcmFormat& format) {
     stream_format_ = format;
     stream_open_ = true;
     group_sync_anchor_valid_ = false;
-    group_sync_start_rtp_ = 0;
+    group_sync_start_ntp_ = 0;
 }
 
 void AirPlayTransport::connect_selected_outputs() {
@@ -101,12 +141,15 @@ void AirPlayTransport::connect_selected_outputs() {
         return;
     }
 
-    sessions_.open_for_outputs(registry_.list(), stream_format_);
-    if (playback_metadata_) {
-        sessions_.set_metadata(*playback_metadata_);
-    } else {
-        sessions_.clear_metadata();
-    }
+    open_output_sessions(registry_.list(), stream_format_);
+}
+
+void AirPlayTransport::open_output_sessions(const std::vector<OutputDevice>& desired, const PcmFormat& format) {
+    sessions_.open_for_outputs(desired, format);
+}
+
+void AirPlayTransport::close_unselected_output_sessions(const std::vector<OutputDevice>& desired) {
+    sessions_.close_missing_outputs(desired);
 }
 
 void AirPlayTransport::cancel_pending_open() {
@@ -146,11 +189,16 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
         throw std::runtime_error("No selected AirPlay output has a ready session.");
     }
 
+    if (bytes == 0 || outputs.empty()) {
+        return;
+    }
+
     if (!group_sync_anchor_valid_) {
-        const auto now_rtp = ntp_to_rtp_timestamp(
-            current_ntp_timestamp(),
-            stream_format_.sample_rate);
-        group_sync_start_rtp_ = now_rtp - stream_timestamp;
+        // Preserve network lead even when a negative offset uses the full
+        // two seconds of the AirPlay realtime latency.
+        group_sync_start_ntp_ = current_ntp_timestamp() -
+            ntp_interval(stream_timestamp, stream_format_.sample_rate) +
+            ntp_interval(kMinimumNetworkLeadMs, 1000);
         group_sync_anchor_valid_ = true;
     }
 
@@ -160,8 +208,8 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
             stream_timestamp,
             bytes,
             stream_format_.sample_rate,
-            250,
-            group_sync_start_rtp_,
+            kMinimumNetworkLeadMs,
+            group_sync_start_ntp_,
             group_sync_anchor_valid_,
         });
     for (const auto& packet : packets) {
@@ -172,15 +220,14 @@ void AirPlayTransport::write_frames(const void* frames, size_t bytes, uint64_t s
 void AirPlayTransport::flush() {
     sessions_.flush();
     group_sync_anchor_valid_ = false;
-    group_sync_start_rtp_ = 0;
+    group_sync_start_ntp_ = 0;
 }
 
 void AirPlayTransport::stop() {
-    sessions_.clear_metadata();
     sessions_.stop();
     stream_open_ = false;
     group_sync_anchor_valid_ = false;
-    group_sync_start_rtp_ = 0;
+    group_sync_start_ntp_ = 0;
 }
 
 void AirPlayTransport::add_discovered_output(OutputDevice device) {
@@ -207,6 +254,15 @@ std::vector<ScheduledPacket> AirPlayTransport::queued_packets() const {
 
 std::vector<AirPlaySessionState> AirPlayTransport::sessions() const {
     return sessions_.sessions();
+}
+
+std::vector<AirPlaySessionState> AirPlayTransport::playback_sessions() const {
+    auto snapshot = sessions_.sessions();
+    for (auto& session : snapshot) {
+        const auto output = registry_.find(session.output_id);
+        session.open = session.open && output && output->selected;
+    }
+    return snapshot;
 }
 
 void AirPlayTransport::sync_discovered_outputs() {

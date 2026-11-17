@@ -4,6 +4,9 @@ project(FoobarUniversalMultiroom LANGUAGES CXX)
 
 include(FetchContent)
 
+# Keep warnings in the pinned Mbed TLS dependency from breaking newer compilers.
+set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "Treat Mbed TLS compiler warnings as errors")
+
 set(AIRPLAY2_SENDER_CPP_TAG "8c4034263f1c265d25b3cfb88a090624760ad22a" CACHE STRING "Pinned airplay2-sender-cpp revision")
 FetchContent_Declare(airplay2_sender_cpp
     GIT_REPOSITORY https://github.com/akustikrausch/airplay2-sender-cpp.git
@@ -14,6 +17,7 @@ FetchContent_MakeAvailable(airplay2_sender_cpp)
 
 add_library(MultiroomCore
     components/foo_out_multiroom_bridge/core/multiroom_engine.cpp
+    components/foo_out_multiroom_bridge/core/output_preferences.cpp
     components/foo_out_multiroom_bridge/core/output_registry.cpp
     components/foo_out_multiroom_bridge/core/packet_scheduler.cpp
     components/foo_out_multiroom_bridge/core/speaker_groups.cpp

@@ -12,6 +12,8 @@ namespace multiroom::airplay {
 
 namespace {
 
+constexpr size_t kPacketHistoryLimit = 256;
+
 void validate_stream_format(const PcmFormat& format) {
     if (format.channels != 2 || format.bits_per_sample != 16) {
         throw std::invalid_argument("AirPlay MVP sessions require stereo 16-bit PCM.");
@@ -68,6 +70,10 @@ void AirPlaySessionManager::prepare_outputs(const std::vector<OutputDevice>& out
         }
 
         auto& session = sessions_[output.id];
+        if (session.open || session.phase == AirPlaySessionPhase::Connecting) {
+            session.output_name = output.name;
+            continue;
+        }
         update_session_from_output(session, output);
         if (session.phase == AirPlaySessionPhase::Failed) {
             session.phase = AirPlaySessionPhase::Closed;
@@ -79,7 +85,7 @@ void AirPlaySessionManager::prepare_outputs(const std::vector<OutputDevice>& out
 void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& outputs, const PcmFormat& format) {
     validate_stream_format(format);
 
-    std::lock_guard lock(mutex_);
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
 
     size_t selected_count = 0;
     size_t ready_count = 0;
@@ -94,59 +100,80 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
         }
         ++selected_count;
 
-        auto& session = sessions_[output.id];
-        const bool can_reuse_ready_session =
-            session.phase == AirPlaySessionPhase::Ready &&
-            session.open &&
-            session.endpoint_host == output.endpoint_host &&
-            session.endpoint_port == output.endpoint_port &&
-            same_format(session.negotiated_format, format);
-
-        update_session_from_output(session, output);
-
+        std::string validation_error;
         try {
             validate_output_for_stream(output);
-            if (can_reuse_ready_session) {
+        } catch (const std::exception& e) {
+            validation_error = e.what();
+        }
+
+        AirPlaySessionState opening;
+        update_session_from_output(opening, output);
+        opening.phase = AirPlaySessionPhase::Connecting;
+        AirPlaySessionState previous;
+        {
+            std::lock_guard lock(mutex_);
+            auto& session = sessions_[output.id];
+            if (validation_error.empty() &&
+                session.phase == AirPlaySessionPhase::Ready &&
+                session.open &&
+                session.endpoint_host == output.endpoint_host &&
+                session.endpoint_port == output.endpoint_port &&
+                same_format(session.negotiated_format, format)) {
+                session.output_name = output.name;
                 session.last_error.clear();
                 ++ready_count;
                 continue;
             }
+            previous = std::move(session);
+            session = opening;
+        }
 
-            session.phase = AirPlaySessionPhase::Connecting;
-            session.open = false;
-            session.negotiated_format = {};
-            session.rtsp_session_id.clear();
-            session.stream_uri.clear();
-            session.rtsp_server.clear();
-            session.rtsp_supported_methods.clear();
-            session.transport_ports = {};
-            session.last_error.clear();
-            session.queued_packets.clear();
+        bool opened = false;
+        try {
+            // A receiver's setup must leave ready receivers free to accept PCM.
+            if (previous.open || !previous.rtsp_session_id.empty()) {
+                control_client_->close(previous.output_id, previous.rtsp_session_id);
+            }
+            if (!validation_error.empty()) {
+                throw std::runtime_error(validation_error);
+            }
+            if (cancel_open_requested_.load()) {
+                throw std::runtime_error("AirPlay session setup cancelled.");
+            }
 
-            const auto negotiated = control_client_->open(output, format);
-            session.negotiated_format = format;
-            session.rtsp_session_id = negotiated.rtsp_session_id;
-            session.stream_uri = negotiated.stream_uri;
-            session.rtsp_server = negotiated.server_name;
-            session.rtsp_supported_methods = negotiated.supported_methods;
-            session.transport_ports = negotiated.ports;
-            session.phase = AirPlaySessionPhase::Ready;
-            session.open = true;
-            control_client_->set_volume(session.output_id, session.rtsp_session_id, output.volume);
+            auto negotiated = control_client_->open(output, format);
+            opened = true;
+            opening.rtsp_session_id = std::move(negotiated.rtsp_session_id);
+            control_client_->set_volume(output.id, opening.rtsp_session_id, output.volume);
+            if (cancel_open_requested_.load()) {
+                throw std::runtime_error("AirPlay session setup cancelled.");
+            }
+            opening.negotiated_format = format;
+            opening.stream_uri = std::move(negotiated.stream_uri);
+            opening.rtsp_server = std::move(negotiated.server_name);
+            opening.rtsp_supported_methods = std::move(negotiated.supported_methods);
+            opening.transport_ports = negotiated.ports;
+            opening.phase = AirPlaySessionPhase::Ready;
+            opening.open = true;
             ++ready_count;
         } catch (const std::exception& e) {
-            session.phase = AirPlaySessionPhase::Failed;
-            session.open = false;
-            session.negotiated_format = {};
-            session.rtsp_session_id.clear();
-            session.stream_uri.clear();
-            session.rtsp_server.clear();
-            session.rtsp_supported_methods.clear();
-            session.transport_ports = {};
-            session.last_error = e.what();
-            session.queued_packets.clear();
+            if (opened) {
+                control_client_->close(output.id, opening.rtsp_session_id);
+                opening.rtsp_session_id.clear();
+            }
+            opening.phase = AirPlaySessionPhase::Failed;
+            opening.last_error = e.what();
             errors.push_back((output.name.empty() ? output.id : output.name) + ": " + e.what());
         }
+        {
+            std::lock_guard lock(mutex_);
+            sessions_.at(output.id) = std::move(opening);
+        }
+    }
+
+    if (cancel_open_requested_.load()) {
+        throw std::runtime_error("AirPlay session setup cancelled.");
     }
 
     if (selected_count != 0 && ready_count == 0 && !errors.empty()) {
@@ -160,8 +187,6 @@ void AirPlaySessionManager::open_for_outputs(const std::vector<OutputDevice>& ou
 }
 
 void AirPlaySessionManager::close_missing_outputs(const std::vector<OutputDevice>& outputs) {
-    std::lock_guard lock(mutex_);
-
     std::set<std::string> selected;
     for (const auto& output : outputs) {
         if (output.selected) {
@@ -169,14 +194,9 @@ void AirPlaySessionManager::close_missing_outputs(const std::vector<OutputDevice
         }
     }
 
-    for (auto& [id, session] : sessions_) {
-        if (selected.find(id) == selected.end()) {
-            close_control_session(session);
-            session.phase = AirPlaySessionPhase::Closed;
-            session.open = false;
-            session.last_error.clear();
-            session.queued_packets.clear();
-        }
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    for (const auto& [id, rtsp_session_id] : detach_missing_sessions(selected)) {
+        control_client_->close(id, rtsp_session_id);
     }
 }
 
@@ -199,37 +219,52 @@ void AirPlaySessionManager::set_volume(const std::string& output_id, int volume)
         volume);
 }
 
-void AirPlaySessionManager::set_metadata(const PlaybackMetadata& metadata) {
+void AirPlaySessionManager::stage_metadata(std::optional<PlaybackMetadata> metadata, bool update_existing_sessions) {
+    auto snapshot = metadata ? std::make_shared<const PlaybackMetadata>(std::move(*metadata)) : nullptr;
     std::lock_guard lock(mutex_);
+    playback_metadata_ = std::move(snapshot);
+    if (update_existing_sessions) ++metadata_revision_;
+}
 
-    for (auto& [_, session] : sessions_) {
-        if (session.phase == AirPlaySessionPhase::Ready && session.open) {
-            try {
-                control_client_->set_metadata(
-                    session.output_id,
-                    session.rtsp_session_id,
-                    metadata);
-                session.last_error.clear();
-            } catch (const std::exception& e) {
-                session.last_error = std::string("AirPlay metadata update failed: ") + e.what();
+void AirPlaySessionManager::publish_metadata() {
+    // Keep metadata sequences ordered while leaving the PCM/session lock free
+    // during RTSP I/O. Targets include the exact connection's session ID.
+    std::lock_guard publish_lock(metadata_publish_mutex_);
+    std::vector<std::pair<std::string, std::string>> targets;
+    std::shared_ptr<const PlaybackMetadata> snapshot;
+    uint64_t revision;
+    {
+        std::lock_guard lock(mutex_);
+        revision = metadata_revision_;
+        snapshot = playback_metadata_;
+        for (const auto& [id, session] : sessions_) {
+            if (session.phase == AirPlaySessionPhase::Ready && session.open &&
+                session.metadata_revision_sent != revision) {
+                targets.emplace_back(id, session.rtsp_session_id);
             }
         }
     }
-}
 
-void AirPlaySessionManager::clear_metadata() {
-    std::lock_guard lock(mutex_);
-
-    for (auto& [_, session] : sessions_) {
-        if (session.phase == AirPlaySessionPhase::Ready && session.open) {
-            try {
-                control_client_->clear_metadata(
-                    session.output_id,
-                    session.rtsp_session_id);
-                session.last_error.clear();
-            } catch (const std::exception& e) {
-                session.last_error = std::string("AirPlay metadata clear failed: ") + e.what();
+    for (const auto& [id, rtsp_session_id] : targets) {
+        if (cancel_open_requested_.load()) break;
+        std::string error;
+        try {
+            if (snapshot) {
+                control_client_->set_metadata(id, rtsp_session_id, *snapshot);
+            } else {
+                control_client_->clear_metadata(id, rtsp_session_id);
             }
+        } catch (const std::exception& e) {
+            error = std::string("AirPlay metadata update failed: ") + e.what();
+        }
+
+        std::lock_guard lock(mutex_);
+        const auto it = sessions_.find(id);
+        if (it != sessions_.end() && it->second.rtsp_session_id == rtsp_session_id) {
+            if (error.empty()) {
+                it->second.metadata_revision_sent = revision;
+            }
+            it->second.last_error = std::move(error);
         }
     }
 }
@@ -249,6 +284,9 @@ void AirPlaySessionManager::enqueue(const ScheduledPacket& packet, const void* f
         frames,
         bytes);
     it->second.queued_packets.push_back(packet);
+    if (it->second.queued_packets.size() > kPacketHistoryLimit) {
+        it->second.queued_packets.pop_front();
+    }
 }
 
 void AirPlaySessionManager::flush() {
@@ -273,14 +311,16 @@ void AirPlaySessionManager::reset_pending_open_cancel() {
 }
 
 void AirPlaySessionManager::stop() {
-    std::lock_guard lock(mutex_);
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    std::lock_guard publish_lock(metadata_publish_mutex_);
 
-    for (auto& [_, session] : sessions_) {
-        close_control_session(session);
-        session.phase = AirPlaySessionPhase::Closed;
-        session.open = false;
-        session.last_error.clear();
-        session.queued_packets.clear();
+    for (const auto& [id, rtsp_session_id] : detach_missing_sessions({})) {
+        try {
+            control_client_->clear_metadata(id, rtsp_session_id);
+        } catch (const std::exception&) {
+            // A receiver which stopped responding still needs teardown.
+        }
+        control_client_->close(id, rtsp_session_id);
     }
 }
 
@@ -319,15 +359,24 @@ std::set<std::string> AirPlaySessionManager::ready_output_ids() const {
     return result;
 }
 
-void AirPlaySessionManager::close_control_session(AirPlaySessionState& session) {
-    if (session.open || !session.rtsp_session_id.empty()) {
-        control_client_->close(session.output_id, session.rtsp_session_id);
+std::vector<std::pair<std::string, std::string>> AirPlaySessionManager::detach_missing_sessions(
+    const std::set<std::string>& selected) {
+    std::vector<std::pair<std::string, std::string>> detached;
+    std::lock_guard lock(mutex_);
+    for (auto& [id, session] : sessions_) {
+        if (selected.contains(id)) continue;
+
+        if (session.open || !session.rtsp_session_id.empty()) {
+            detached.emplace_back(id, std::move(session.rtsp_session_id));
+        }
+        AirPlaySessionState closed;
+        closed.output_id = std::move(session.output_id);
+        closed.output_name = std::move(session.output_name);
+        closed.endpoint_host = std::move(session.endpoint_host);
+        closed.endpoint_port = session.endpoint_port;
+        session = std::move(closed);
     }
-    session.rtsp_session_id.clear();
-    session.stream_uri.clear();
-    session.rtsp_server.clear();
-    session.rtsp_supported_methods.clear();
-    session.transport_ports = {};
+    return detached;
 }
 
 }  // namespace multiroom::airplay

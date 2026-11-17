@@ -5,22 +5,45 @@
 
 namespace multiroom::airplay {
 
+constexpr uint64_t ntp_interval(uint64_t units, uint32_t units_per_second) {
+    return ((units / units_per_second) << 32) |
+        (((units % units_per_second) << 32) / units_per_second);
+}
+
 inline uint64_t current_ntp_timestamp() {
     using namespace std::chrono;
-    constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
-    const auto now = system_clock::now().time_since_epoch();
-    const auto seconds = duration_cast<std::chrono::seconds>(now);
-    const auto fraction_ns = duration_cast<std::chrono::nanoseconds>(now - seconds).count();
-    const auto fraction = (static_cast<unsigned long long>(fraction_ns) << 32) / 1000000000ULL;
-    return ((static_cast<uint64_t>(seconds.count()) + kUnixToNtpSeconds) << 32) | fraction;
+    // All timing responders and stream anchors share one clock. System wall
+    // time seeds its epoch once, so wall-clock steps do not move active audio.
+    struct ClockReference {
+        steady_clock::time_point steady_time;
+        uint64_t ntp_time;
+    };
+    static const auto reference = [] {
+        const auto steady_time = steady_clock::now();
+        const auto wall_time = system_clock::now().time_since_epoch();
+        const auto whole_seconds = floor<seconds>(wall_time);
+        const auto fraction = duration_cast<nanoseconds>(wall_time - whole_seconds);
+        constexpr uint64_t kUnixToNtpSeconds = 2208988800ULL;
+        return ClockReference{
+            steady_time,
+            ((static_cast<uint64_t>(whole_seconds.count()) + kUnixToNtpSeconds) << 32) |
+                ntp_interval(static_cast<uint64_t>(fraction.count()), 1000000000),
+        };
+    }();
+    const auto elapsed = duration_cast<nanoseconds>(steady_clock::now() - reference.steady_time);
+    return reference.ntp_time + ntp_interval(static_cast<uint64_t>(elapsed.count()), 1000000000);
 }
 
-inline uint64_t ntp_to_rtp_timestamp(uint64_t ntp, uint32_t sample_rate) {
-    return ((ntp >> 16) * sample_rate) >> 16;
-}
-
-inline uint64_t rtp_timestamp_to_ntp(uint64_t rtp_timestamp, uint32_t sample_rate) {
-    return ((rtp_timestamp << 16) / sample_rate) << 16;
+constexpr uint64_t airplay_presentation_ntp(
+    uint64_t group_start_ntp,
+    uint64_t stream_timestamp,
+    uint32_t sample_rate,
+    int offset_ms) {
+    const auto packet_ntp = group_start_ntp + ntp_interval(stream_timestamp, sample_rate);
+    if (offset_ms < 0) {
+        return packet_ntp - ntp_interval(static_cast<uint64_t>(-static_cast<int64_t>(offset_ms)), 1000);
+    }
+    return packet_ntp + ntp_interval(static_cast<uint64_t>(offset_ms), 1000);
 }
 
 }  // namespace multiroom::airplay

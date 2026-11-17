@@ -29,8 +29,13 @@ network speakers at the same time.
 - Captured once when the first PCM packet of a stream is scheduled.
 - Shared by every selected receiver so equal presentation timestamps resolve
   to the same NTP wall-clock instant.
+- The wall clock supplies the initial epoch. A monotonic clock drives the
+  timing replies and stream anchors for the life of the component.
 - Recreated after flush or a new stream; adding a receiver mid-stream keeps the
   existing group anchor.
+- Sender RTP timestamps advance by source frames. Speaker offsets change the
+  time announced in sync packets, and a flush keeps the RTP timestamp carried
+  in the FLUSH request as the starting point for the new source timeline.
 
 `OffsetModel`
 
@@ -50,6 +55,7 @@ network speakers at the same time.
 
 - Automatic latency measurement.
 - Drift correction.
+- Native PTP clock exchange for receivers that require it.
 - Local Windows endpoint compensation.
 - Room/group presets.
 - Multiple protocol families in one synchronized group only where their timing

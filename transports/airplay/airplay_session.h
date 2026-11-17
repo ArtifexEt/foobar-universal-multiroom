@@ -5,11 +5,14 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace multiroom::airplay {
@@ -35,7 +38,8 @@ struct AirPlaySessionState {
     std::vector<std::string> rtsp_supported_methods;
     AirPlayTransportPorts transport_ports;
     std::string last_error;
-    std::vector<ScheduledPacket> queued_packets;
+    std::deque<ScheduledPacket> queued_packets;
+    uint64_t metadata_revision_sent = 0;
 };
 
 class AirPlaySessionManager {
@@ -48,8 +52,8 @@ public:
     void open_for_outputs(const std::vector<OutputDevice>& outputs, const PcmFormat& format);
     void close_missing_outputs(const std::vector<OutputDevice>& outputs);
     void set_volume(const std::string& output_id, int volume);
-    void set_metadata(const PlaybackMetadata& metadata);
-    void clear_metadata();
+    void stage_metadata(std::optional<PlaybackMetadata> metadata, bool update_existing_sessions);
+    void publish_metadata();
     void enqueue(const ScheduledPacket& packet, const void* frames, size_t bytes);
     void flush();
     void reset_pending_open_cancel();
@@ -61,9 +65,14 @@ public:
     std::set<std::string> ready_output_ids() const;
 
 private:
-    void close_control_session(AirPlaySessionState& session);
+    std::vector<std::pair<std::string, std::string>> detach_missing_sessions(
+        const std::set<std::string>& selected);
 
     mutable std::mutex mutex_;
+    std::mutex lifecycle_mutex_;
+    std::mutex metadata_publish_mutex_;
+    std::shared_ptr<const PlaybackMetadata> playback_metadata_;
+    uint64_t metadata_revision_ = 1;
     std::shared_ptr<AirPlayControlClient> control_client_;
     std::atomic_bool cancel_open_requested_ = false;
     std::map<std::string, AirPlaySessionState> sessions_;
