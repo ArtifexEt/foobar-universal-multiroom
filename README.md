@@ -127,7 +127,7 @@ The command, native dropdown, and standalone element use the same picker and
 persisted speaker group. The two live-label surfaces report active sessions,
 not merely saved checkboxes.
 
-In the full picker, enter an **Offset (ms)** between −2000 and +2000 for
+In the full picker, enter a **Delay (ms)** between −2000 and +2000 for
 each speaker. Positive values delay that speaker relative to the group.
 Press Enter to apply or Escape to discard the edit. The component saves
 the offset with the speaker's volume and selection.

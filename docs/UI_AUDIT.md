@@ -79,12 +79,12 @@ connect/send/receive immediately before the render worker is joined.
 - consistent light and dark appearances derived from foobar theme colors, with
   a dark Apple-style default for the command surface that has no UI callback.
 
-## Remaining work
-
 The full picker starts at 640 device-independent pixels and scales its type,
 hit areas, and controls together. It fits the monitor work area, stacks
 volume and delay on narrower displays, and keeps the footer visible while
 scrolling. Tab follows the speaker list and reveals the next control.
+
+## Remaining work
 
 These are product gaps, not fallbacks for broken AirPlay behavior:
 

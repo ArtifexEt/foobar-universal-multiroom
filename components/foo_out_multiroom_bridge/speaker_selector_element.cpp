@@ -328,7 +328,7 @@ private:
             (std::min)(layout_.work_height * 100 / (fixed + row), layout_.work_width * 100 / 312),
             1, requested_scale);
         while (layout_.scale_percent > 1 &&
-               layout_.visible_rows(1, list_top() + px(8 + kPairingFooterHeight), layout_width()) == 0) {
+               layout_.visible_rows(1, list_top() + px(8) + px(kPairingFooterHeight), layout_width()) == 0) {
             --layout_.scale_percent;
         }
     }
@@ -525,7 +525,9 @@ private:
             WIN32_OP_D(dc.FillRect(&rc, button_brush));
             dc.SetTextColor(text_color());
             SelectObjectScope title_scope(dc, section_font_.m_hFont != nullptr ? section_font_.m_hFont : popup_font());
-            WIN32_OP_D(dc.DrawTextW(L"Refresh Speakers & TVs", -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX) > 0);
+            wchar_t label[80] = {};
+            ::GetWindowTextW(item->hwndItem, label, static_cast<int>(std::size(label)));
+            WIN32_OP_D(dc.DrawTextW(label, -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) > 0);
         } else if (item->CtlID == kPairCommand || item->CtlID == kCloseCommand) {
             wchar_t text[64] = {};
             ::GetWindowTextW(item->hwndItem, text, static_cast<int>(std::size(text)));
@@ -629,7 +631,8 @@ private:
 
         if (id == kRefreshCommand && code == BN_CLICKED) {
             finish_offset_edit();
-            MultiroomComponentState::instance().refresh_outputs();
+            auto& state = MultiroomComponentState::instance();
+            if (!state.refresh_in_progress()) state.refresh_outputs();
             refresh_picker_state();
             return 0;
         }
@@ -710,6 +713,13 @@ private:
             sync_control_values(&previous_outputs);
         }
         update_pairing_controls(state.pairing_in_progress());
+        const auto refresh = ::GetDlgItem(m_hWnd, static_cast<int>(kRefreshCommand));
+        if (refresh != nullptr) {
+            const auto label = state.refresh_in_progress()
+                ? (state.playback_active() ? L"Refresh queued until playback stops" : L"Refreshing speakers\x2026")
+                : L"Refresh Speakers & TVs";
+            if (text_from_window(refresh) != label) ::SetWindowTextW(refresh, label);
+        }
     }
 
     LRESULT on_scroll(UINT, WPARAM wp, LPARAM lp, BOOL&) {
@@ -816,10 +826,13 @@ private:
             ::RemoveWindowSubclass(control, control_input, subclass);
             return ::DefSubclassProc(control, message, wp, lp);
         }
+        if (message != WM_MOUSEWHEEL && message != WM_KEYDOWN && message != WM_CHAR) {
+            return ::DefSubclassProc(control, message, wp, lp);
+        }
 
         const auto id = static_cast<UINT_PTR>(::GetDlgCtrlID(control));
         const bool combo = id == kGroupComboId;
-        const bool dropdown_open = combo && ::SendMessageW(control, CB_GETDROPPEDSTATE, 0, 0);
+        const bool dropdown_open = combo && ::SendMessageW(control, CB_GETDROPPEDSTATE, 0, 0) != FALSE;
         const bool offset = id >= kSpeakerOffsetBase && id < kSpeakerOffsetBase + popup.outputs_.size();
         const auto post_key = [&](PickerKey key) {
             ::PostMessageW(popup.m_hWnd, kPickerKeyMessage, static_cast<WPARAM>(key), reinterpret_cast<LPARAM>(control));
