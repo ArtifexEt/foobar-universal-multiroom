@@ -23,6 +23,7 @@
 #include "../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../components/foo_out_multiroom_bridge/core/speaker_groups.h"
 #include "../components/foo_out_multiroom_bridge/core/volume_control.h"
+#include "../components/foo_out_multiroom_bridge/speaker_picker_layout.h"
 #include "../transports/airplay/airplay_timing.h"
 #include "../transports/airplay/airplay_transport.h"
 
@@ -324,6 +325,35 @@ bool exercise_volume_does_not_block_audio() {
     control_client->release_blocked_request();
     volume_update.get();
     audio_write.get();
+    return ok;
+}
+
+bool exercise_airplay_artwork_clear() {
+    multiroom::PlaybackMetadata metadata;
+    metadata.title = "First track";
+    metadata.artwork_mime = "image/png";
+    const std::string cover("\x89PNG\0", 5);
+    metadata.artwork.assign(cover.begin(), cover.end());
+    const auto with_artwork = multiroom::airplay::make_airplay_artwork_parameter(metadata);
+    const std::string artwork_count_set("asac\0\0\0\2\0\1", 10);
+    bool ok = expect(with_artwork.content_type == "image/png" && with_artwork.body == cover &&
+                     multiroom::airplay::make_airplay_dmap_metadata_body(metadata).find(artwork_count_set) != std::string::npos,
+                     "supported cover bytes and the DMAP artwork count should describe the same image");
+
+    metadata.title = "Next track";
+    metadata.artwork.clear();
+    const auto without_artwork = multiroom::airplay::make_airplay_artwork_parameter(metadata);
+    const std::string artwork_count_clear("asac\0\0\0\2\0\0", 10);
+    ok &= expect(without_artwork.content_type == "image/none" && without_artwork.body.empty() &&
+                 multiroom::airplay::make_airplay_dmap_metadata_body(metadata).find(artwork_count_clear) != std::string::npos,
+                 "the following track without a cover should explicitly clear receiver artwork");
+
+    metadata.artwork_mime = "image/webp";
+    metadata.artwork.assign(cover.begin(), cover.end());
+    const auto unsupported_artwork = multiroom::airplay::make_airplay_artwork_parameter(metadata);
+    ok &= expect(unsupported_artwork.content_type == "image/none" && unsupported_artwork.body.empty() &&
+                 multiroom::airplay::make_airplay_dmap_metadata_body(metadata).find(artwork_count_clear) != std::string::npos,
+                 "unsupported artwork data should not advertise an image that cannot be sent");
     return ok;
 }
 
@@ -810,6 +840,44 @@ bool exercise_output_registry_retain() {
     return ok;
 }
 
+bool exercise_speaker_picker_layout() {
+    using multiroom::ui::SpeakerPickerLayout;
+
+    bool ok = true;
+    const SpeakerPickerLayout desktop{100, 1920, 1080};
+    ok &= expect(desktop.width() == 640 && desktop.row_height(desktop.width()) == 116 &&
+                 desktop.visible_rows(10, 200, desktop.width()) == 7,
+                 "the 100% speaker picker should use its preferred width and only show complete rows");
+
+    const SpeakerPickerLayout scaled{150, 1366, 768};
+    ok &= expect(scaled.px(15) == 23 && scaled.px(-15) == -23 &&
+                 scaled.width() == 960 && scaled.row_height(scaled.width()) == 174 &&
+                 scaled.visible_rows(10, 285, scaled.width()) == 2 &&
+                 scaled.visible_rows(1, 285, scaled.width()) == 1,
+                 "the 150% speaker picker should round scaled pixels and respect the output count");
+    const int minimum_wide_client = scaled.px(515);
+    ok &= expect(!scaled.stack_controls(minimum_wide_client) &&
+                 scaled.stack_controls(minimum_wide_client - scaled.px(16)),
+                 "the speaker picker should stack controls when the scrollbar reduces the usable width");
+
+    const SpeakerPickerLayout laptop{200, 1280, 720};
+    ok &= expect(laptop.width() == 1248 && laptop.row_height(laptop.width()) == 232 &&
+                 laptop.visible_rows(10, 420, laptop.width()) == 1,
+                 "the 200% speaker picker should leave room for one complete row on a short display");
+
+    const SpeakerPickerLayout narrow_laptop{200, 1024, 768};
+    ok &= expect(narrow_laptop.width() == 992 &&
+                 narrow_laptop.row_height(narrow_laptop.width()) == 308 &&
+                 narrow_laptop.visible_rows(10, 420, narrow_laptop.width(), 8) == 1 &&
+                 narrow_laptop.visible_rows(10, 420, narrow_laptop.width(), 9) == 0,
+                 "the narrow picker should account for its stacked row and the measured detail line");
+
+    const SpeakerPickerLayout tiny_area{100, 12, 20};
+    ok &= expect(tiny_area.width() == 0 && tiny_area.visible_rows(10, 100, 0) == 0,
+                 "a work area smaller than the picker chrome should never produce negative dimensions");
+    return ok;
+}
+
 bool exercise_saved_output_preferences() {
     using namespace multiroom;
     auto saved = parse_output_preferences(
@@ -1085,9 +1153,11 @@ int main() {
         ok &= exercise_output_registry_retain();
         ok &= exercise_airplay_remote_commands();
         ok &= exercise_volume_does_not_block_audio();
+        ok &= exercise_airplay_artwork_clear();
         ok &= exercise_metadata_does_not_block_audio();
         ok &= exercise_session_reconfiguration_does_not_block_audio();
         ok &= exercise_speaker_groups();
+        ok &= exercise_speaker_picker_layout();
         ok &= exercise_saved_output_preferences();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
