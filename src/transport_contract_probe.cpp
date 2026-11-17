@@ -9,6 +9,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -18,6 +19,7 @@
 #include <airplay_crypto.h>
 
 #include "../components/foo_out_multiroom_bridge/core/multiroom_engine.h"
+#include "../components/foo_out_multiroom_bridge/core/output_preferences.h"
 #include "../components/foo_out_multiroom_bridge/core/output_registry.h"
 #include "../components/foo_out_multiroom_bridge/core/speaker_groups.h"
 #include "../components/foo_out_multiroom_bridge/core/volume_control.h"
@@ -169,6 +171,8 @@ std::string make_airplay_remote_command_message(
 
 class SelectiveFailingControlClient final : public multiroom::airplay::AirPlayControlClient {
 public:
+    enum class Request { Volume, Metadata };
+
     explicit SelectiveFailingControlClient(std::set<std::string> failing_outputs)
         : failing_outputs_(std::move(failing_outputs)) {}
 
@@ -228,18 +232,15 @@ public:
     }
 
     void set_volume(const std::string&, const std::string&, int) override {
-        std::unique_lock lock(volume_mutex_);
-        if (!block_next_volume_) return;
-        volume_entered_ = true;
-        volume_changed_.notify_all();
-        volume_changed_.wait(lock, [&] { return release_volume_; });
-        block_next_volume_ = false;
-        release_volume_ = false;
+        wait_if_blocked(Request::Volume);
     }
     void set_metadata(
+        const std::string& id,
         const std::string&,
-        const std::string&,
-        const multiroom::PlaybackMetadata&) override {}
+        const multiroom::PlaybackMetadata& metadata) override {
+        wait_if_blocked(Request::Metadata);
+        metadata_titles_.emplace_back(id, metadata.title);
+    }
     void clear_metadata(const std::string&, const std::string&) override {}
     void flush(const std::string&, const std::string&) override {}
     void reset_pending_open_cancel() override {}
@@ -248,34 +249,42 @@ public:
 
     size_t open_count() const { return open_count_; }
     const std::vector<std::string>& audio_output_ids() const { return audio_output_ids_; }
+    const auto& metadata_titles() const { return metadata_titles_; }
 
-    void block_next_volume() {
-        std::lock_guard lock(volume_mutex_);
-        block_next_volume_ = true;
-        volume_entered_ = false;
-        release_volume_ = false;
+    void block_next_request(Request request) {
+        std::lock_guard lock(request_mutex_);
+        blocked_request_ = request;
+        request_entered_ = false;
     }
 
-    bool wait_for_blocked_volume(std::chrono::milliseconds timeout) {
-        std::unique_lock lock(volume_mutex_);
-        return volume_changed_.wait_for(lock, timeout, [&] { return volume_entered_; });
+    bool wait_for_blocked_request(std::chrono::milliseconds timeout) {
+        std::unique_lock lock(request_mutex_);
+        return request_changed_.wait_for(lock, timeout, [&] { return request_entered_; });
     }
 
-    void release_blocked_volume() {
-        std::lock_guard lock(volume_mutex_);
-        release_volume_ = true;
-        volume_changed_.notify_all();
+    void release_blocked_request() {
+        std::lock_guard lock(request_mutex_);
+        blocked_request_.reset();
+        request_changed_.notify_all();
     }
 
 private:
+    void wait_if_blocked(Request request) {
+        std::unique_lock lock(request_mutex_);
+        if (blocked_request_ != request) return;
+        request_entered_ = true;
+        request_changed_.notify_all();
+        request_changed_.wait(lock, [&] { return blocked_request_ != request; });
+    }
+
     std::set<std::string> failing_outputs_;
     size_t open_count_ = 0;
     std::vector<std::string> audio_output_ids_;
-    std::mutex volume_mutex_;
-    std::condition_variable volume_changed_;
-    bool block_next_volume_ = false;
-    bool volume_entered_ = false;
-    bool release_volume_ = false;
+    std::vector<std::pair<std::string, std::string>> metadata_titles_;
+    std::mutex request_mutex_;
+    std::condition_variable request_changed_;
+    std::optional<Request> blocked_request_;
+    bool request_entered_ = false;
 };
 
 bool exercise_volume_does_not_block_audio() {
@@ -288,12 +297,12 @@ bool exercise_volume_does_not_block_audio() {
     sessions.prepare_outputs({output});
     sessions.open_for_outputs({output}, {44100, 2, 16});
 
-    control_client->block_next_volume();
+    control_client->block_next_request(SelectiveFailingControlClient::Request::Volume);
     auto volume_update = std::async(std::launch::async, [&] {
         sessions.set_volume(output.id, 25);
     });
     bool ok = expect(
-        control_client->wait_for_blocked_volume(1s),
+        control_client->wait_for_blocked_request(1s),
         "test volume request should enter the simulated RTSP wait");
 
     const std::vector<int16_t> silence(704);
@@ -309,9 +318,56 @@ bool exercise_volume_does_not_block_audio() {
         audio_write.wait_for(250ms) == std::future_status::ready,
         "an in-flight receiver volume request must not block PCM packet delivery");
 
-    control_client->release_blocked_volume();
+    control_client->release_blocked_request();
     volume_update.get();
     audio_write.get();
+    return ok;
+}
+
+bool exercise_metadata_does_not_block_audio() {
+    using namespace std::chrono_literals;
+
+    auto client = std::make_shared<SelectiveFailingControlClient>(std::set<std::string>{});
+    multiroom::airplay::AirPlayTransport transport(client);
+    multiroom::MultiroomEngine engine(transport);
+    transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7400));
+    transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7401));
+    engine.select_outputs({"living-room"});
+    engine.open_stream({44100, 2, 16});
+    transport.connect_selected_outputs();
+
+    multiroom::PlaybackMetadata first;
+    first.title = "First track";
+    client->block_next_request(SelectiveFailingControlClient::Request::Metadata);
+    auto first_update = std::async(std::launch::async, [&] { transport.set_playback_metadata(first); });
+    bool ok = expect(client->wait_for_blocked_request(1s), "test metadata must enter the simulated RTSP wait");
+
+    const std::vector<int16_t> silence(704);
+    auto audio_write = std::async(std::launch::async, [&] {
+        engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
+    });
+    ok &= expect(audio_write.wait_for(1s) == std::future_status::ready,
+                 "waiting for a metadata acknowledgement must leave PCM delivery running");
+
+    multiroom::PlaybackMetadata latest;
+    latest.title = "Latest track";
+    auto stage_latest = std::async(std::launch::async, [&] { transport.stage_playback_metadata(latest); });
+    ok &= expect(stage_latest.wait_for(1s) == std::future_status::ready,
+                 "a newer track snapshot can be queued while the receiver acknowledges the previous one");
+
+    client->release_blocked_request();
+    first_update.get();
+    audio_write.get();
+    stage_latest.get();
+
+    transport.publish_playback_metadata();
+    engine.select_outputs({"living-room", "kitchen"});
+    transport.connect_selected_outputs();
+    transport.publish_playback_metadata();
+
+    ok &= expect(client->metadata_titles() == std::vector<std::pair<std::string, std::string>>{
+                     {"living-room", "First track"}, {"living-room", "Latest track"}, {"kitchen", "Latest track"}},
+                 "joining should replay current metadata only to the newly opened receiver");
     return ok;
 }
 
@@ -685,6 +741,69 @@ bool exercise_output_registry_retain() {
     return ok;
 }
 
+bool exercise_saved_output_preferences() {
+    using namespace multiroom;
+    auto saved = parse_output_preferences(
+        "airplay:hardware|1|30\r\n"
+        "airplay:key|0|70|0|-28\n"
+        "airplay:missing|1|55|1\n");
+    OutputDevice speaker;
+    speaker.id = "airplay:key";
+    speaker.aliases = {"airplay:hardware"};
+    speaker.supports_airplay2 = true;
+    speaker.endpoint_host = "127.0.0.1";
+    speaker.endpoint_port = 7000;
+    std::vector<OutputDevice> discovered{speaker};
+
+    bool ok = expect(restore_output_preferences(saved, discovered),
+                     "restoring should consolidate the saved legacy alias");
+    ok &= expect(saved.size() == 2 && !discovered.front().selected &&
+                 discovered.front().volume == 70 && !discovered.front().visible_in_dropdown &&
+                 discovered.front().offset_ms == -28,
+                 "canonical preferences should win over conflicting legacy aliases");
+
+    auto& selected_speaker = discovered.front();
+    selected_speaker.selected = true;
+    record_output_preferences(saved, selected_speaker);
+    ok &= expect(has_undiscovered_selection(saved, discovered) &&
+                 selected_playback_ids(discovered) == std::vector<std::string>{"airplay:key"},
+                 "discovery should allow a partial group while its missing member stays saved");
+    auto missing = selected_speaker;
+    missing.id = "airplay:missing";
+    missing.aliases.clear();
+    missing.endpoint_port = 0;
+    discovered.push_back(missing);
+    restore_output_preferences(saved, discovered);
+    ok &= expect(discovered.back().selected && has_undiscovered_selection(saved, discovered) &&
+                 selected_playback_ids(discovered).size() == 1,
+                 "an unavailable saved member should stay checked without entering the playback set");
+    discovered.back().endpoint_port = 7001;
+    ok &= expect(!has_undiscovered_selection(saved, discovered) && selected_playback_ids(discovered).size() == 2,
+                 "discovery should complete after every saved receiver has an endpoint");
+
+    OutputDevice renamed;
+    renamed.id = "airplay:room|speaker._airplay._tcp.local";
+    renamed.selected = true;
+    renamed.volume = 43;
+    renamed.offset_ms = 250;
+    record_output_preferences(saved, renamed);
+    auto reread = parse_output_preferences(serialize_output_preferences(saved));
+    ok &= expect(reread.size() == saved.size() && reread.back().output_id == renamed.id &&
+                 reread.back().selected && reread.back().volume == 43 && reread.back().offset_ms == 250,
+                 "selection should survive a save and restart with a delimiter in the speaker ID");
+
+    airplay::AirPlayTransport transport(airplay::make_airplay_loopback_control_client());
+    speaker.name = "Living Room";
+    speaker.txt_records["pk"] = "1111";
+    transport.add_discovered_output(speaker);
+    speaker.id = "airplay:other-key";
+    speaker.txt_records["pk"] = "2222";
+    transport.add_discovered_output(speaker);
+    ok &= expect(transport.list_outputs().size() == 2,
+                 "distinct advertised public keys should stay separate even on the same host and name");
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -763,6 +882,7 @@ int main() {
 
         engine.open_stream({48000, 2, 16});
         transport.connect_selected_outputs();
+        transport.publish_playback_metadata();
         engine.set_output_volume("kitchen", 40);
 
         const std::vector<int16_t> silence(480);
@@ -896,7 +1016,9 @@ int main() {
         ok &= exercise_output_registry_retain();
         ok &= exercise_airplay_remote_commands();
         ok &= exercise_volume_does_not_block_audio();
+        ok &= exercise_metadata_does_not_block_audio();
         ok &= exercise_speaker_groups();
+        ok &= exercise_saved_output_preferences();
 
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {

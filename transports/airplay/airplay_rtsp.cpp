@@ -53,6 +53,7 @@ constexpr size_t kAirPlay2Channels = 2;
 constexpr uint32_t kAirPlay2SampleRate = 44100;
 constexpr uint32_t kAirPlay2LatencySeconds = 2;
 constexpr uint32_t kAirPlay2MinimumLatencyFrames = 11025;
+constexpr uint64_t kUninitializedRtpTimestamp = uint64_t{1} << 32;
 constexpr uint32_t kDefaultSsrc = 0x46424d52;  // FBMR
 
 enum class AirPlay2AudioEncoding {
@@ -1190,7 +1191,6 @@ public:
             const auto encrypted = encrypt_airplay2_audio_payload(ap2_audio_key_, ap2_audio_nonce_++, header, payload);
             header.insert(header.end(), encrypted.begin(), encrypted.end());
             udp_ports_.data.send_to(remote_host_, remote_data_port_, header);
-            rtp_clock_initialized_ = true;
             next_rtp_timestamp_ = rtp_timestamp + static_cast<uint32_t>(kAirPlay2FramesPerPacket);
             return;
         }
@@ -1199,7 +1199,6 @@ public:
         const auto frame_count = static_cast<uint32_t>(bytes / (kAirPlay2Channels * sizeof(int16_t)));
         const auto rtp = make_rtp_l16_packet(next_rtp_sequence_++, timestamp, kDefaultSsrc, frames, bytes);
         udp_ports_.data.send_to(remote_host_, remote_data_port_, rtp);
-        rtp_clock_initialized_ = true;
         next_rtp_timestamp_ = timestamp + frame_count;
     }
 
@@ -1226,9 +1225,10 @@ public:
         }
 
         const uint64_t position_frames = metadata.position_ms * stream_sample_rate_ / 1000;
-        const uint32_t current = rtp_clock_initialized_
-            ? next_rtp_timestamp_
-            : static_cast<uint32_t>(position_frames & 0xffffffffu);
+        const auto next_rtp_timestamp = next_rtp_timestamp_.load();
+        const auto current = next_rtp_timestamp == kUninitializedRtpTimestamp
+            ? static_cast<uint32_t>(position_frames)
+            : static_cast<uint32_t>(next_rtp_timestamp);
         const uint32_t start = current - static_cast<uint32_t>(position_frames & 0xffffffffu);
         const auto rtp_info = "rtptime=" + std::to_string(start);
 
@@ -1279,8 +1279,9 @@ public:
         static_cast<void>(request("FLUSH", stream_uri_, std::move(headers)));
         // The source frame cursor restarts at zero. Keep sending from the
         // RTP timestamp promised in the FLUSH header, with a new sync anchor.
-        if (rtp_clock_initialized_) {
-            ap2_rtp_base_ = next_rtp_timestamp_;
+        const auto next_rtp_timestamp = next_rtp_timestamp_.load();
+        if (next_rtp_timestamp != kUninitializedRtpTimestamp) {
+            ap2_rtp_base_ = static_cast<uint32_t>(next_rtp_timestamp);
         }
         ap2_first_audio_ = true;
     }
@@ -1488,8 +1489,7 @@ private:
     void reset_session_state() {
         next_cseq_ = 1;
         next_rtp_sequence_ = 0;
-        next_rtp_timestamp_ = 0;
-        rtp_clock_initialized_ = false;
+        next_rtp_timestamp_ = kUninitializedRtpTimestamp;
         stream_sample_rate_ = kAirPlay2SampleRate;
         remote_data_port_ = 0;
         remote_control_port_ = 0;
@@ -1544,7 +1544,8 @@ private:
     }
 
     std::string make_rtp_info_header() const {
-        const auto timestamp = rtp_clock_initialized_ ? next_rtp_timestamp_ : uint32_t{};
+        // Narrowing the uninitialized marker also yields the pre-audio value 0.
+        const auto timestamp = static_cast<uint32_t>(next_rtp_timestamp_.load());
         return "seq=" + std::to_string(next_rtp_sequence_) + ";rtptime=" + std::to_string(timestamp);
     }
 
@@ -2263,9 +2264,8 @@ private:
     std::mutex request_mutex_;
     int next_cseq_ = 1;
     uint16_t next_rtp_sequence_ = 0;
-    uint32_t next_rtp_timestamp_ = 0;
+    std::atomic<uint64_t> next_rtp_timestamp_ = kUninitializedRtpTimestamp;
     uint32_t stream_sample_rate_ = kAirPlay2SampleRate;
-    bool rtp_clock_initialized_ = false;
     uint16_t remote_data_port_ = 0;
     uint16_t remote_control_port_ = 0;
     uint32_t ap2_session_id_ = 0;
@@ -2510,7 +2510,7 @@ void AirPlayRtspControlClient::set_metadata(
     {
         std::lock_guard lock(connections_mutex_);
         const auto it = connections_.find(output_id);
-        if (it == connections_.end()) {
+        if (it == connections_.end() || !it->second->matches_active_rtsp_session(rtsp_session_id)) {
             return;
         }
         connection = it->second;
@@ -2528,7 +2528,9 @@ void AirPlayRtspControlClient::clear_metadata(
     {
         std::lock_guard lock(connections_mutex_);
         const auto it = connections_.find(output_id);
-        if (it == connections_.end()) return;
+        if (it == connections_.end() || !it->second->matches_active_rtsp_session(rtsp_session_id)) {
+            return;
+        }
         connection = it->second;
     }
     connection->clear_metadata(rtsp_session_id);

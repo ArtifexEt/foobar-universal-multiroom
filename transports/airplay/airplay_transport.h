@@ -31,6 +31,8 @@ public:
     void set_output_offset_ms(const std::string& id, int offset_ms) override;
     void set_playback_metadata(const PlaybackMetadata& metadata) override;
     void clear_playback_metadata() override;
+    void stage_playback_metadata(std::optional<PlaybackMetadata> metadata, bool update_existing_sessions = true);
+    void publish_playback_metadata();
     void open_stream(const PcmFormat& format) override;
     void connect_selected_outputs();
     void reset_pending_open_cancel();
@@ -60,7 +62,6 @@ private:
     bool stream_open_ = false;
     bool group_sync_anchor_valid_ = false;
     uint64_t group_sync_start_ntp_ = 0;
-    std::optional<PlaybackMetadata> playback_metadata_;
 };
 
 }  // namespace multiroom::airplay

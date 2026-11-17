@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -33,6 +34,15 @@ std::vector<multiroom::OutputDevice> playable_outputs() {
         }),
         outputs.end());
     return outputs;
+}
+
+struct SpeakerMenu {
+    std::vector<multiroom::SpeakerGroup> groups;
+    std::vector<multiroom::OutputDevice> outputs;
+};
+
+SpeakerMenu speaker_menu() {
+    return {MultiroomComponentState::instance().speaker_groups(), playable_outputs()};
 }
 
 std::string narrow_wide(const std::wstring& text) {
@@ -73,16 +83,16 @@ public:
     }
 
     size_t getNumValues() override {
-        return MultiroomComponentState::instance().speaker_groups().size() + playable_outputs().size() + 2;
+        const auto& menu = displayed_menu();
+        return menu.groups.size() + menu.outputs.size() + 2;
     }
 
     void getValue(size_t index, pfc::string_base& out) override {
-        const auto groups = MultiroomComponentState::instance().speaker_groups();
-        const auto outputs = playable_outputs();
         if (index == 0) {
             out = narrow_wide(MultiroomComponentState::instance().playback_destination_label()).c_str();
             return;
         }
+        const auto& [groups, outputs] = displayed_menu();
         if (index <= groups.size()) {
             const auto& group = groups[index - 1];
             const bool active = MultiroomComponentState::instance().active_speaker_group_id() == group.id;
@@ -106,11 +116,9 @@ public:
 
     void setSelectedIndex(size_t index) override {
         if (index == 0) return;
-        const auto groups = MultiroomComponentState::instance().speaker_groups();
-        const auto outputs = playable_outputs();
+        const auto& [groups, outputs] = displayed_menu();
         if (index <= groups.size()) {
             MultiroomComponentState::instance().activate_speaker_group(groups[index - 1].id);
-            notify_multiroom_speaker_toolbar_changed();
             return;
         }
         if (index == groups.size() + outputs.size() + 1) {
@@ -121,7 +129,6 @@ public:
         const auto output_index = index - groups.size() - 1;
         if (output_index >= outputs.size()) return;
         MultiroomComponentState::instance().toggle_output(outputs[output_index].id);
-        notify_multiroom_speaker_toolbar_changed();
     }
 
     size_t getSelectedIndex() override {
@@ -145,12 +152,23 @@ public:
     }
 
     void onDropDown() override {
-        if (playable_outputs().empty() &&
+        menu_ = speaker_menu();
+        if (menu_->outputs.empty() &&
             !MultiroomComponentState::instance().playback_active()) {
             MultiroomComponentState::instance().refresh_outputs();
         }
         notify_toolbar_on_main_thread();
     }
+
+private:
+    const SpeakerMenu& displayed_menu() {
+        // Keep indices tied to the rows the user saw even if discovery finishes
+        // while the dropdown is open.
+        if (!menu_) menu_ = speaker_menu();
+        return *menu_;
+    }
+
+    std::optional<SpeakerMenu> menu_;
 };
 
 static service_factory_single_t<MultiroomSpeakerToolbarDropdown> g_multiroom_speaker_toolbar_dropdown_factory;
