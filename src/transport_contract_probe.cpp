@@ -595,6 +595,7 @@ bool exercise_no_selected_outputs_sink() {
     multiroom::MultiroomEngine engine(transport);
     engine.start_discovery();
     transport.add_discovered_output(make_airplay_loopback_output("living-room", "Living Room", 7300));
+    transport.add_discovered_output(make_airplay_loopback_output("kitchen", "Kitchen", 7301));
 
     engine.select_outputs({});
     engine.open_stream({44100, 2, 16});
@@ -612,10 +613,11 @@ bool exercise_no_selected_outputs_sink() {
     transport.connect_selected_outputs();
     engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
     const auto packets_sent = control_client->audio_packet_count();
-    transport.set_routed_outputs({});
+    transport.retain_routed_outputs({"kitchen"});
+    transport.set_routed_outputs({"kitchen"});
     engine.write_interleaved_pcm(silence.data(), silence.size() * sizeof(int16_t));
     ok &= expect(packets_sent > 0 && control_client->audio_packet_count() == packets_sent,
-                 "removing the current route must cut off PCM before the receiver has finished teardown");
+                 "replacing the current route with an unready receiver must cut off PCM without interrupting the stream");
     transport.close_unselected_output_sessions({});
     ok &= expect(control_client->close_count() == 1,
                  "an unavailable replacement group should still close the previous receiver");

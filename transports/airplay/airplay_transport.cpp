@@ -63,15 +63,29 @@ void AirPlayTransport::set_remote_command_handler(
 }
 
 void AirPlayTransport::set_enabled_outputs(const std::vector<std::string>& ids) {
-    set_routed_outputs(ids);
+    sync_discovered_outputs();
+    registry_.set_enabled_outputs(resolve_output_ids(ids));
     const auto outputs = registry_.list();
     sessions_.prepare_outputs(outputs);
     close_unselected_output_sessions(outputs);
 }
 
 void AirPlayTransport::set_routed_outputs(const std::vector<std::string>& ids) {
-    sync_discovered_outputs();
-    registry_.set_enabled_outputs(resolve_output_ids(ids));
+    const auto ready = sessions_.ready_output_ids();
+    auto routed = resolve_output_ids(ids);
+    std::erase_if(routed, [&](const auto& id) { return !ready.contains(id); });
+    registry_.set_enabled_outputs(routed);
+}
+
+void AirPlayTransport::retain_routed_outputs(const std::vector<std::string>& ids) {
+    const auto desired = resolve_output_ids(ids);
+    std::vector<std::string> retained;
+    for (const auto& output : registry_.list()) {
+        if (output.selected && std::find(desired.begin(), desired.end(), output.id) != desired.end()) {
+            retained.push_back(output.id);
+        }
+    }
+    set_routed_outputs(retained);
 }
 
 void AirPlayTransport::set_output_volume(const std::string& id, int volume) {

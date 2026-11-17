@@ -156,6 +156,7 @@ private:
         const AirPlayRemoteCommandEvent& event);
 
     std::shared_ptr<AirPlayPairingStore> pairing_store_;
+    std::mutex pairing_credentials_mutex_;
     std::map<std::string, AirPlayPairingCredentials> memory_pairing_credentials_;
     std::mutex remote_command_mutex_;
     AirPlayRemoteCommandHandler remote_command_handler_;

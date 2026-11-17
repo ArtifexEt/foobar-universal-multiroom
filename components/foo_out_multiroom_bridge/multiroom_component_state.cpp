@@ -737,11 +737,7 @@ void MultiroomComponentState::control_update_worker() {
                         if (selection_still_current && !playback_open_cancel_requested_.load()) {
                             // Continue delivering PCM to retained speakers and
                             // stop routing removed speakers before network work.
-                            auto retained = multiroom::selected_playback_ids(transport_.list_outputs());
-                            std::erase_if(retained, [&](const auto& id) {
-                                return std::find(selected.begin(), selected.end(), id) == selected.end();
-                            });
-                            transport_.set_routed_outputs(retained);
+                            transport_.retain_routed_outputs(selected);
                         } else {
                             selection_still_current = false;
                         }
@@ -944,6 +940,7 @@ void MultiroomComponentState::toggle_output(const std::string& id) {
                 output_it->playback_error.clear();
                 if (!output_it->selected) output_it->receiver_volume_percent.reset();
                 update_stored_output_state(*output_it);
+                routing_selection_changed_.store(true);
                 changed = true;
             }
             last_error_.clear();
@@ -1051,6 +1048,7 @@ bool MultiroomComponentState::activate_speaker_group(const std::string& id) {
             }
             no_group_members_available = multiroom::selected_playback_ids(cached_outputs_).empty();
             replace_stored_output_selection(*group, cached_outputs_);
+            routing_selection_changed_.store(true);
             last_error_.clear();
         }
 
@@ -1245,7 +1243,6 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
             last_error_.clear();
         }
 
-        std::vector<multiroom::airplay::AirPlaySessionState> sessions_snapshot;
         {
             std::lock_guard transport_lock(transport_mutex_);
             if (!playback_engine_) {
@@ -1258,16 +1255,27 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
                     output.id, effective_remote_volume(output.volume, master_volume_snapshot));
             }
             playback_engine_->open_stream(format);
-            transport_.connect_selected_outputs();
+            try {
+                transport_.connect_selected_outputs();
+            } catch (const std::exception&) {
+                std::lock_guard lock(mutex_);
+                if (selected == multiroom::selected_playback_ids(cached_outputs_)) throw;
+                // The current group will be reconciled by the control worker.
+            }
             if (playback_open_cancel_requested_.load()) {
                 playback_engine_->stop();
                 throw std::runtime_error("AirPlay playback setup cancelled.");
             }
-            sessions_snapshot = transport_.playback_sessions();
-        }
 
-        {
             std::lock_guard lock(mutex_);
+            // The picker can change the desired group during the handshake.
+            // Initial PCM must go only to speakers still selected at publish.
+            const auto current_selection = multiroom::selected_playback_ids(cached_outputs_);
+            std::erase_if(selected, [&](const auto& id) {
+                return std::find(current_selection.begin(), current_selection.end(), id) == current_selection.end();
+            });
+            transport_.set_routed_outputs(selected);
+
             for (const auto& output : cached_outputs_) {
                 const auto initial = std::find_if(outputs_snapshot.begin(), outputs_snapshot.end(), [&](const auto& old) {
                     return old.id == output.id;
@@ -1278,7 +1286,7 @@ void MultiroomComponentState::open_playback_stream(const multiroom::PcmFormat& f
                     control_volume_update_ids_.insert(output.id);
                 }
             }
-            active_output_names_ = apply_session_status(cached_outputs_, sessions_snapshot);
+            active_output_names_ = apply_session_status(cached_outputs_, transport_.playback_sessions());
             // Publish Open before clearing Connecting while holding the same
             // lock used by playback_active(). A refresh must never observe a
             // false/false gap after the AirPlay sessions are already ready.
@@ -1325,6 +1333,12 @@ void MultiroomComponentState::write_playback_pcm(const void* frames, size_t byte
             }
             if (!playback_engine_->stream_open()) {
                 return;
+            }
+            if (routing_selection_changed_.load()) {
+                std::lock_guard lock(mutex_);
+                if (routing_selection_changed_.exchange(false)) {
+                    transport_.retain_routed_outputs(multiroom::selected_playback_ids(cached_outputs_));
+                }
             }
             playback_engine_->write_interleaved_pcm(frames, bytes);
         }

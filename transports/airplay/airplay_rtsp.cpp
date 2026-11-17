@@ -2412,6 +2412,7 @@ std::optional<AirPlayPairingCredentials> AirPlayRtspControlClient::load_pairing_
     std::vector<std::string> candidate_ids = {output.id};
     candidate_ids.insert(candidate_ids.end(), output.aliases.begin(), output.aliases.end());
 
+    std::lock_guard lock(pairing_credentials_mutex_);
     if (pairing_store_) {
         for (const auto& candidate_id : candidate_ids) {
             auto stored = pairing_store_->load(candidate_id);
@@ -2443,6 +2444,7 @@ void AirPlayRtspControlClient::save_pairing_credentials(const AirPlayPairingCred
         throw std::invalid_argument("Cannot save incomplete AirPlay pairing credentials.");
     }
 
+    std::lock_guard lock(pairing_credentials_mutex_);
     memory_pairing_credentials_[credentials.output_id] = credentials;
     if (pairing_store_) {
         pairing_store_->save(credentials);

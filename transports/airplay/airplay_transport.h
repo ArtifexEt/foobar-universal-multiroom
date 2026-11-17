@@ -27,6 +27,7 @@ public:
     void set_remote_command_handler(AirPlayRemoteCommandHandler handler);
     void set_enabled_outputs(const std::vector<std::string>& ids) override;
     void set_routed_outputs(const std::vector<std::string>& ids);
+    void retain_routed_outputs(const std::vector<std::string>& ids);
     void set_output_volume(const std::string& id, int volume) override;
     void set_initial_output_volume(const std::string& id, int volume);
     void set_session_volume(const std::string& id, int volume);
